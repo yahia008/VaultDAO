@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useWallet } from '../../context/WalletContext';
+import { useToast } from '../../context/ToastContext';
 import { useVaultContract } from '../../hooks/useVaultContract';
 import ConfirmationModal from '../../components/ConfirmationModal';
 
@@ -46,11 +47,11 @@ const mockProposals: Proposal[] = [
 
 const Proposals: React.FC = () => {
     const { address, isConnected } = useWallet();
+    const { notify } = useToast();
     const { rejectProposal, loading } = useVaultContract();
     const [proposals, setProposals] = useState<Proposal[]>(mockProposals);
     const [selectedProposal, setSelectedProposal] = useState<number | null>(null);
     const [showRejectModal, setShowRejectModal] = useState(false);
-    const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
     // Mock user role - in production, fetch from contract
     const userRole = 'Admin'; // or 'Treasurer' or 'None'
@@ -86,20 +87,19 @@ const Proposals: React.FC = () => {
                 )
             );
 
-            // Show success toast
-            setToast({
-                message: `Proposal #${selectedProposal} rejected successfully`,
-                type: 'success',
-            });
+            // Show success toast via context (preference-aware)
+            notify(
+                'proposal_rejected',
+                `Proposal #${selectedProposal} rejected successfully`,
+                'success'
+            );
 
             console.log('Rejection reason:', reason);
             console.log('Transaction hash:', txHash);
-        } catch (error: any) {
-            // Show error toast
-            setToast({
-                message: error.message || 'Failed to reject proposal',
-                type: 'error',
-            });
+        } catch (error: unknown) {
+            // Show error toast via context (preference-aware)
+            const message = error instanceof Error ? error.message : 'Failed to reject proposal';
+            notify('proposal_rejected', message, 'error');
         } finally {
             setShowRejectModal(false);
             setSelectedProposal(null);
@@ -110,14 +110,6 @@ const Proposals: React.FC = () => {
         setShowRejectModal(false);
         setSelectedProposal(null);
     };
-
-    // Auto-hide toast after 5 seconds
-    React.useEffect(() => {
-        if (toast) {
-            const timer = setTimeout(() => setToast(null), 5000);
-            return () => clearTimeout(timer);
-        }
-    }, [toast]);
 
     const getStatusColor = (status: Proposal['status']) => {
         switch (status) {
@@ -145,27 +137,6 @@ const Proposals: React.FC = () => {
                     New Proposal
                 </button>
             </div>
-
-            {/* Toast Notification */}
-            {toast && (
-                <div
-                    className={`fixed top-4 right-4 z-50 px-6 py-4 rounded-lg shadow-lg border ${
-                        toast.type === 'success'
-                            ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                            : 'bg-red-500/10 text-red-400 border-red-500/20'
-                    }`}
-                >
-                    <div className="flex items-center gap-3">
-                        <span>{toast.message}</span>
-                        <button
-                            onClick={() => setToast(null)}
-                            className="text-gray-400 hover:text-white"
-                        >
-                            ×
-                        </button>
-                    </div>
-                </div>
-            )}
 
             {/* Proposals List */}
             <div className="space-y-4">
