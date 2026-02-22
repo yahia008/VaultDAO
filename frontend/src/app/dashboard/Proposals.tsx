@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ArrowUpRight, Clock, SearchX, Plus, Loader2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { ArrowUpRight, Clock, SearchX } from 'lucide-react';
 import type { NewProposalFormData } from '../../components/modals/NewProposalModal';
 import NewProposalModal from '../../components/modals/NewProposalModal';
 import ProposalDetailModal from '../../components/modals/ProposalDetailModal';
@@ -15,10 +15,9 @@ import { DEFAULT_TOKENS, getTokenIcon, formatTokenBalance } from '../../constant
 import { useWallet } from '../../context/WalletContextProps';
 
 const CopyButton = ({ text }: { text: string }) => (
-  <button 
+  <button
     onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(text); }}
     className="p-1 hover:bg-gray-700 rounded text-gray-400"
-    aria-label="Copy to clipboard"
   >
     <Clock size={14} />
   </button>
@@ -26,13 +25,13 @@ const CopyButton = ({ text }: { text: string }) => (
 
 const StatusBadge = ({ status }: { status: string }) => {
   const colors: Record<string, string> = {
-    Pending: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30',
-    Approved: 'bg-green-500/10 text-green-500 border-green-500/30',
-    Rejected: 'bg-red-500/10 text-red-500 border-red-500/30',
-    Executed: 'bg-blue-500/10 text-blue-500 border-blue-500/30',
+    Pending: 'bg-yellow-500/10 text-yellow-500',
+    Approved: 'bg-green-500/10 text-green-500',
+    Rejected: 'bg-red-500/10 text-red-500',
+    Executed: 'bg-blue-500/10 text-blue-500',
   };
   return (
-    <span className={`px-3 py-1 rounded-full text-xs font-medium border ${colors[status] || 'bg-gray-500/10 text-gray-500 border-gray-500/30'}`}>
+    <span className={`px-3 py-1 rounded-full text-xs font-medium ${colors[status] || 'bg-gray-500/10 text-gray-500'}`}>
       {status}
     </span>
   );
@@ -121,17 +120,15 @@ const Proposals: React.FC = () => {
     return ['all', ...Array.from(tokens)];
   }, [proposals]);
 
-  // Fetch proposals
   useEffect(() => {
     const fetchProposals = async () => {
       setLoading(true);
       try {
-        // Mock data - in production, this would fetch from the contract
         const mockData: Proposal[] = [
           {
             id: '1',
-            proposer: 'GABC...XYZ',
-            recipient: 'GDEF...UVW',
+            proposer: '0x123...456',
+            recipient: '0xabc...def',
             amount: '100',
             token: 'NATIVE',
             tokenSymbol: 'XLM',
@@ -170,14 +167,13 @@ const Proposals: React.FC = () => {
         ];
         setProposals(mockData);
       } catch (error) {
-        console.error('Failed to fetch proposals:', error);
-        notify('config_updated', 'Failed to load proposals', 'error');
+        console.error(error);
       } finally {
         setLoading(false);
       }
     };
     fetchProposals();
-  }, [notify]);
+  }, []);
 
   // Filter proposals by token and other filters
   const filteredProposals = useMemo(() => {
@@ -228,70 +224,8 @@ const Proposals: React.FC = () => {
     });
   }, [proposals, activeFilters, selectedTokenFilter]);
 
-  // Handle proposal submission
-  const handleProposalSubmit = useCallback(async (event: React.FormEvent) => {
-    event.preventDefault();
-    
-    if (!isConnected || !address) {
-      setSubmitError('Please connect your wallet to create a proposal');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setSubmitError(null);
-
-    try {
-      // Convert amount to stroops (smallest unit)
-      const amountInStroops = Math.floor(parseFloat(newProposalForm.amount) * 10000000).toString();
-      
-      // Submit to contract
-      const txHash = await proposeTransfer(
-        newProposalForm.recipient,
-        newProposalForm.token,
-        amountInStroops,
-        newProposalForm.memo || ''
-      );
-
-      // Add new proposal to the list
-      const newProposal: Proposal = {
-        id: String(proposals.length + 1),
-        proposer: `${address.slice(0, 4)}...${address.slice(-4)}`,
-        recipient: `${newProposalForm.recipient.slice(0, 4)}...${newProposalForm.recipient.slice(-4)}`,
-        amount: newProposalForm.amount,
-        token: newProposalForm.token === 'NATIVE' ? 'XLM' : newProposalForm.token,
-        memo: newProposalForm.memo || 'No memo',
-        status: 'Pending',
-        approvals: 0,
-        threshold: 2,
-        createdAt: new Date().toISOString()
-      };
-
-      setProposals(prev => [newProposal, ...prev]);
-      
-      // Reset form and close modal
-      setNewProposalForm({
-        recipient: '',
-        token: 'NATIVE',
-        amount: '',
-        memo: '',
-      });
-      setShowNewProposalModal(false);
-      
-      notify('new_proposal', `Proposal created successfully! TX: ${txHash?.slice(0, 8)}...`, 'success');
-    } catch (err: unknown) {
-      console.error('Failed to create proposal:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create proposal. Please try again.';
-      setSubmitError(errorMessage);
-      notify('new_proposal', errorMessage, 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [isConnected, address, newProposalForm, proposals.length, proposeTransfer, notify]);
-
-  // Handle reject confirmation
-  const handleRejectConfirm = useCallback(async () => {
+  const handleRejectConfirm = async () => {
     if (!rejectingId) return;
-    
     try {
       await rejectProposal(Number(rejectingId));
       setProposals(prev => prev.map(p => p.id === rejectingId ? { ...p, status: 'Rejected' } : p));
@@ -303,39 +237,7 @@ const Proposals: React.FC = () => {
       setShowRejectModal(false);
       setRejectingId(null);
     }
-  }, [rejectingId, rejectProposal, notify]);
-
-  // Handle field change
-  const handleFieldChange = useCallback((field: keyof NewProposalFormData, value: string) => {
-    setNewProposalForm(prev => ({ ...prev, [field]: value }));
-    setSubmitError(null); // Clear error when user makes changes
-  }, []);
-
-  // Handle modal close
-  const handleModalClose = useCallback(() => {
-    if (!isSubmitting) {
-      setShowNewProposalModal(false);
-      setSubmitError(null);
-      setNewProposalForm({
-        recipient: '',
-        token: 'NATIVE',
-        amount: '',
-        memo: '',
-      });
-    }
-  }, [isSubmitting]);
-
-  // Handle template selector (placeholder)
-  const handleOpenTemplateSelector = useCallback(() => {
-    // TODO: Implement template selector modal
-    notify('config_updated', 'Template selector coming soon!', 'info');
-  }, [notify]);
-
-  // Handle save as template (placeholder)
-  const handleSaveAsTemplate = useCallback(() => {
-    // TODO: Implement save as template functionality
-    notify('config_updated', 'Template saved successfully!', 'success');
-  }, [notify]);
+  };
 
   const handleTokenSelect = (token: TokenInfo) => {
     setNewProposalForm(prev => ({ ...prev, token: token.address }));
@@ -393,64 +295,13 @@ const Proposals: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 p-4 sm:p-6 text-white">
+    <div className="min-h-screen bg-gray-900 p-6 text-white">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 sm:mb-8">
-          <h1 className="text-2xl sm:text-3xl font-bold">Proposals</h1>
-          <button 
-            onClick={() => setShowNewProposalModal(true)} 
-            className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700 px-6 py-2.5 rounded-lg transition min-h-[44px]"
-          >
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold">Proposals</h1>
+          <button onClick={() => setShowNewProposalModal(true)} className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded-lg transition">
             New Proposal
           </button>
-        </div>
-
-        {/* Token Filter Bar */}
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="text-sm text-gray-400">Filter by token:</span>
-          <div className="relative">
-            <button
-              onClick={() => setShowTokenFilterDropdown(!showTokenFilterDropdown)}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 hover:border-purple-500/50 transition-colors"
-            >
-              <span>{selectedTokenFilter === 'all' ? 'All Tokens' : selectedTokenFilter}</span>
-              <ChevronDown size={16} className={`transition-transform ${showTokenFilterDropdown ? 'rotate-180' : ''}`} />
-            </button>
-            
-            {showTokenFilterDropdown && (
-              <div className="absolute z-20 mt-2 left-0 min-w-[150px] bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
-                {availableTokens.map((token) => (
-                  <button
-                    key={token}
-                    onClick={() => {
-                      setSelectedTokenFilter(token);
-                      setShowTokenFilterDropdown(false);
-                    }}
-                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-gray-700 transition-colors ${
-                      selectedTokenFilter === token ? 'bg-purple-600/20 text-purple-300' : 'text-gray-300'
-                    }`}
-                  >
-                    {token === 'all' ? 'All Tokens' : (
-                      <span className="flex items-center gap-2">
-                        <span>{getTokenIcon(token)}</span>
-                        <span>{token}</span>
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          
-          {selectedTokenFilter !== 'all' && (
-            <button
-              onClick={() => setSelectedTokenFilter('all')}
-              className="text-xs text-purple-400 hover:text-purple-300"
-            >
-              Clear filter
-            </button>
-          )}
         </div>
 
         <ProposalFilters proposalCount={filteredProposals.length} onFilterChange={setActiveFilters} />
@@ -458,102 +309,56 @@ const Proposals: React.FC = () => {
         <div className="mt-6 grid grid-cols-1 gap-4">
           {filteredProposals.length > 0 ? (
             filteredProposals.map((prop) => (
-              <div 
-                key={prop.id} 
-                onClick={() => setSelectedProposal(prop)} 
-                className="bg-gray-800/50 p-4 sm:p-5 rounded-2xl border border-gray-700 hover:border-purple-500/50 cursor-pointer transition-all hover:scale-[1.01] group"
-              >
+              <div key={prop.id} onClick={() => setSelectedProposal(prop)} className="bg-gray-800/50 p-5 rounded-2xl border border-gray-700 hover:border-purple-500/50 cursor-pointer transition-all hover:scale-[1.01] group">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                  <div className="flex items-center gap-3 sm:gap-4 flex-1 min-w-0">
-                    <div className="p-2.5 sm:p-3 bg-gray-900 rounded-xl text-purple-400 group-hover:bg-purple-600 group-hover:text-white transition-colors flex-shrink-0">
-                      <ArrowUpRight size={18} className="sm:w-5 sm:h-5" />
+                  <div className="flex items-center gap-4 flex-1">
+                    <div className="p-3 bg-gray-900 rounded-xl text-purple-400 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                      <ArrowUpRight size={20} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
                         <h4 className="text-white font-bold">Proposal #{prop.id}</h4>
-                        <TokenBadge tokenSymbol={prop.tokenSymbol || prop.token} />
                         <CopyButton text={prop.recipient} />
                       </div>
                       <p className="text-sm text-gray-400 truncate max-w-[200px] sm:max-w-md">{prop.memo}</p>
-                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1.5 text-xs text-gray-500">
-                        <span className="flex items-center gap-1">
-                          <Clock size={12} /> 
-                          {new Date(prop.createdAt).toLocaleDateString()}
-                        </span>
-                        <span className="hidden sm:inline">•</span>
-                        <span className="font-medium text-gray-300">
-                          {prop.amount} {prop.tokenSymbol || 'tokens'}
-                        </span>
+                      <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                        <span className="flex items-center gap-1"><Clock size={12} /> {new Date(prop.createdAt).toLocaleDateString()}</span>
+                        <span>• {prop.amount} {prop.token}</span>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     <StatusBadge status={prop.status} />
                     {prop.status === 'Pending' && (
-                      <button 
-                        onClick={(e) => { 
-                          e.stopPropagation(); 
-                          setRejectingId(prop.id); 
-                          setShowRejectModal(true); 
-                        }} 
-                        className="bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white px-3 py-1.5 rounded-lg text-xs transition-colors"
-                      >
+                      <button onClick={(e) => { e.stopPropagation(); setRejectingId(prop.id); setShowRejectModal(true); }} className="bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white px-3 py-1 rounded-lg text-xs transition-colors">
                         Reject
                       </button>
                     )}
                   </div>
                 </div>
-              ))
-            ) : (
-              <div className="flex flex-col items-center justify-center py-12 px-4 bg-gray-800/20 rounded-3xl border border-dashed border-gray-700">
-                <SearchX size={48} className="text-gray-600 mb-4" />
-                <p className="text-gray-400 text-lg font-medium">No proposals match your filters</p>
-                <p className="text-gray-500 text-sm mt-2">Try adjusting your search criteria</p>
               </div>
             ))
           ) : (
             <div className="flex flex-col items-center justify-center py-12 px-4 bg-gray-800/20 rounded-3xl border border-dashed border-gray-700">
               <SearchX size={48} className="text-gray-600 mb-4" />
               <p className="text-gray-400 text-lg font-medium">No proposals match your filters</p>
-              {selectedTokenFilter !== 'all' && (
-                <button
-                  onClick={() => setSelectedTokenFilter('all')}
-                  className="mt-2 text-sm text-purple-400 hover:text-purple-300"
-                >
-                  Clear token filter
-                </button>
-              )}
             </div>
           )}
         </div>
 
-        {/* New Proposal Modal */}
-        <NewProposalModal 
-          isOpen={showNewProposalModal} 
-          loading={loading} 
-          selectedTemplateName={null}
+        <NewProposalModal
+          isOpen={showNewProposalModal}
+          loading={loading}
+          selectedTemplateName={null} // Added required prop
           formData={newProposalForm}
-          tokenBalances={tokenBalances}
-          selectedToken={selectedToken}
-          amountError={amountError}
-          onFieldChange={(f, v) => setNewProposalForm(prev => ({ ...prev, [f]: v }))} 
-          onSubmit={(e) => { e.preventDefault(); setShowNewProposalModal(false); }} 
-          onTokenSelect={handleTokenSelect}
-          onOpenTemplateSelector={() => {}} 
-          onSaveAsTemplate={() => {}} 
+          onFieldChange={(f, v) => setNewProposalForm(prev => ({ ...prev, [f]: v }))}
+          onSubmit={(e) => { e.preventDefault(); setShowNewProposalModal(false); }}
+          onOpenTemplateSelector={() => { }}
+          onSaveAsTemplate={() => { }}
           onClose={() => setShowNewProposalModal(false)}
-          onAddCustomToken={handleAddCustomToken}
         />
         <ProposalDetailModal isOpen={!!selectedProposal} onClose={() => setSelectedProposal(null)} proposal={selectedProposal} />
-        <ConfirmationModal 
-          isOpen={showRejectModal} 
-          title="Reject Proposal" 
-          message="Are you sure you want to reject this?" 
-          onConfirm={handleRejectConfirm} 
-          onCancel={() => setShowRejectModal(false)} 
-          showReasonInput={true} 
-          isDestructive={true} 
-        />
+        <ConfirmationModal isOpen={showRejectModal} title="Reject Proposal" message="Are you sure you want to reject this?" onConfirm={handleRejectConfirm} onCancel={() => setShowRejectModal(false)} showReasonInput={true} isDestructive={true} />
       </div>
     </div>
   );
