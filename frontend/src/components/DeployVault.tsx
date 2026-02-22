@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import TemplateMarketplace from './TemplateMarketplace';
-import { validateTemplate, stroopsToXLM, type VaultTemplate } from '../utils/vaultTemplates';
+import { stroopsToXLM, type VaultTemplate } from '../utils/vaultTemplates';
+
+type VaultConfig = Omit<VaultTemplate['config'], 'signers'>;
 
 interface DeployVaultProps {
-    onDeploy: (config: VaultTemplate['config'], signers: string[]) => Promise<string>;
+    onDeploy: (config: VaultConfig, signers: string[]) => Promise<string>;
     onClose: () => void;
 }
 
@@ -14,7 +16,7 @@ export default function DeployVault({ onDeploy, onClose }: DeployVaultProps) {
     const [showTemplateMarketplace, setShowTemplateMarketplace] = useState(false);
     const [selectedTemplate, setSelectedTemplate] = useState<VaultTemplate | null>(null);
     const [signers, setSigners] = useState<string[]>(['']);
-    const [config, setConfig] = useState({
+    const [config, setConfig] = useState<VaultConfig>({
         threshold: 2,
         spendingLimit: '10000000000',
         dailyLimit: '50000000000',
@@ -37,9 +39,10 @@ export default function DeployVault({ onDeploy, onClose }: DeployVaultProps) {
 
     const handleTemplateSelect = (template: VaultTemplate) => {
         setSelectedTemplate(template);
-        setConfig(template.config);
-        if (template.config.signers.length > 0) {
-            setSigners(template.config.signers);
+        const { signers: templateSigners, ...configWithoutSigners } = template.config;
+        setConfig(configWithoutSigners);
+        if (templateSigners.length > 0) {
+            setSigners(templateSigners);
         }
         setCurrentStep('signers');
     };
@@ -164,8 +167,8 @@ export default function DeployVault({ onDeploy, onClose }: DeployVaultProps) {
                                     <div className="flex flex-col items-center flex-1">
                                         <div
                                             className={`w-10 h-10 rounded-full flex items-center justify-center font-semibold transition-colors ${index <= currentStepIndex
-                                                    ? 'bg-purple-600 text-white'
-                                                    : 'bg-gray-700 text-gray-400'
+                                                ? 'bg-purple-600 text-white'
+                                                : 'bg-gray-700 text-gray-400'
                                                 }`}
                                         >
                                             {step.number}

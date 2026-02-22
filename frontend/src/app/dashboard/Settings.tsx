@@ -73,12 +73,14 @@ const Settings: React.FC = () => {
 
   const handleCloneVault = async (config: any, signers: string[]) => {
     // Mock deployment - in real app, call contract deployment
+    console.log('Cloning vault with config:', config, 'signers:', signers);
     await new Promise((resolve) => setTimeout(resolve, 2000));
     return 'CNEWVAULT' + Math.random().toString(36).substring(7).toUpperCase();
   };
 
   const handleDeployVault = async (config: any, signers: string[]) => {
     // Mock deployment - in real app, call contract deployment
+    console.log('Deploying vault with config:', config, 'signers:', signers);
     await new Promise((resolve) => setTimeout(resolve, 2000));
     return 'CNEWVAULT' + Math.random().toString(36).substring(7).toUpperCase();
   };
