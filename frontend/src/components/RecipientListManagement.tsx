@@ -10,8 +10,8 @@ interface RecipientListManagementProps {
 
 export default function RecipientListManagement({ onClose }: RecipientListManagementProps) {
     const { getListMode, setListMode, addToWhitelist, removeFromWhitelist,
-        addToBlacklist, removeFromBlacklist, isWhitelisted, isBlacklisted } = useVaultContract();
-    const { showToast } = useToast();
+        addToBlacklist, removeFromBlacklist } = useVaultContract();
+    const { notify } = useToast();
 
     const [mode, setModeState] = useState<ListMode>('Disabled');
     const [newAddress, setNewAddress] = useState('');
@@ -40,9 +40,9 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
         try {
             await setListMode(newMode);
             setModeState(newMode);
-            showToast('List mode updated successfully', 'success');
+            notify('config_updated', 'List mode updated successfully', 'success');
         } catch (error: any) {
-            showToast(`Failed to update mode: ${error.message}`, 'error');
+            notify('config_updated', `Failed to update mode: ${error.message}`, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -50,7 +50,7 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
 
     const handleAddAddress = async () => {
         if (!newAddress.trim()) {
-            showToast('Please enter a valid address', 'error');
+            notify('config_updated', 'Please enter a valid address', 'error');
             return;
         }
 
@@ -59,15 +59,15 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
             if (mode === 'Whitelist') {
                 await addToWhitelist(newAddress);
                 setWhitelistAddresses([...whitelistAddresses, newAddress]);
-                showToast('Address added to whitelist', 'success');
+                notify('config_updated', 'Address added to whitelist', 'success');
             } else if (mode === 'Blacklist') {
                 await addToBlacklist(newAddress);
                 setBlacklistAddresses([...blacklistAddresses, newAddress]);
-                showToast('Address added to blacklist', 'success');
+                notify('config_updated', 'Address added to blacklist', 'success');
             }
             setNewAddress('');
         } catch (error: any) {
-            showToast(`Failed to add address: ${error.message}`, 'error');
+            notify('config_updated', `Failed to add address: ${error.message}`, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -79,14 +79,14 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
             if (listType === 'whitelist') {
                 await removeFromWhitelist(address);
                 setWhitelistAddresses(whitelistAddresses.filter(a => a !== address));
-                showToast('Address removed from whitelist', 'success');
+                notify('config_updated', 'Address removed from whitelist', 'success');
             } else {
                 await removeFromBlacklist(address);
                 setBlacklistAddresses(blacklistAddresses.filter(a => a !== address));
-                showToast('Address removed from blacklist', 'success');
+                notify('config_updated', 'Address removed from blacklist', 'success');
             }
         } catch (error: any) {
-            showToast(`Failed to remove address: ${error.message}`, 'error');
+            notify('config_updated', `Failed to remove address: ${error.message}`, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -97,7 +97,7 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
         const addresses = lines.map(line => line.trim().split(',')[0]).filter(addr => addr);
 
         if (addresses.length === 0) {
-            showToast('No valid addresses found in CSV', 'error');
+            notify('config_updated', 'No valid addresses found in CSV', 'error');
             return;
         }
 
@@ -115,7 +115,7 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
             }
         });
 
-        showToast(`Imported ${addresses.length} addresses`, 'success');
+        notify('config_updated', `Imported ${addresses.length} addresses`, 'success');
         setCsvImportText('');
         setShowImportModal(false);
     };
@@ -130,7 +130,7 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
         a.download = `${mode.toLowerCase()}_addresses.csv`;
         a.click();
         URL.revokeObjectURL(url);
-        showToast('List exported successfully', 'success');
+        notify('config_updated', 'List exported successfully', 'success');
     };
 
     const currentList = mode === 'Whitelist' ? whitelistAddresses : blacklistAddresses;
@@ -161,8 +161,8 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
                             onClick={() => handleModeChange(m)}
                             disabled={isLoading}
                             className={`px-4 py-2 rounded-lg font-medium transition-colors ${mode === m
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                                 } disabled:opacity-50`}
                         >
                             {m}
