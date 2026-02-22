@@ -133,7 +133,7 @@ const Proposals: React.FC = () => {
   }, [notify]);
 
   const filteredProposals = useMemo(() => {
-    let filtered = proposals.filter((p) => {
+    const filtered = proposals.filter((p) => {
       const searchLower = activeFilters.search.toLowerCase();
       const matchesSearch =
         !activeFilters.search ||
@@ -222,10 +222,11 @@ const Proposals: React.FC = () => {
       setShowNewProposalModal(false);
       
       notify('new_proposal', `Proposal created successfully! TX: ${txHash?.slice(0, 8)}...`, 'success');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to create proposal:', err);
-      setSubmitError(err.message || 'Failed to create proposal. Please try again.');
-      notify('new_proposal', err.message || 'Failed to create proposal', 'error');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create proposal. Please try again.';
+      setSubmitError(errorMessage);
+      notify('new_proposal', errorMessage, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -239,8 +240,9 @@ const Proposals: React.FC = () => {
       await rejectProposal(Number(rejectingId));
       setProposals(prev => prev.map(p => p.id === rejectingId ? { ...p, status: 'Rejected' } : p));
       notify('proposal_rejected', `Proposal #${rejectingId} rejected successfully`, 'success');
-    } catch (err: any) {
-      notify('proposal_rejected', err.message || 'Failed to reject proposal', 'error');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to reject proposal';
+      notify('proposal_rejected', errorMessage, 'error');
     } finally {
       setShowRejectModal(false);
       setRejectingId(null);

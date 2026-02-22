@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
-import { StrKey } from 'stellar-sdk';
+import { isValidStellarAddress, isValidContractAddress, formatAmount } from '../../utils/proposalValidation';
 
 export interface NewProposalFormData {
   recipient: string;
@@ -27,92 +27,6 @@ interface NewProposalModalProps {
   onSaveAsTemplate: () => void;
   submitError?: string | null;
 }
-
-// Base32 alphabet used by Stellar
-const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-// Validate base32 encoding
-const isValidBase32 = (str: string): boolean => {
-  for (const char of str) {
-    if (!BASE32_ALPHABET.includes(char)) {
-      return false;
-    }
-  }
-  return true;
-};
-
-// Stellar address validation
-const isValidStellarAddress = (addr: string): boolean => {
-  if (!addr || typeof addr !== 'string') return false;
-  
-  // Check for valid Ed25519 public key (G... format, 56 characters)
-  if (addr.startsWith('G')) {
-    if (addr.length !== 56) return false;
-    try {
-      return StrKey.isValidEd25519PublicKey(addr);
-    } catch {
-      return false;
-    }
-  }
-  
-  // Check for valid muxed account (M... format, 69 characters)
-  if (addr.startsWith('M')) {
-    if (addr.length !== 69) return false;
-    // Validate base32 encoding for muxed accounts
-    const dataPart = addr.slice(1);
-    return isValidBase32(dataPart);
-  }
-  
-  return false;
-};
-
-// Check if it's a valid contract address (C... format, 56 characters)
-const isValidContractAddress = (addr: string): boolean => {
-  if (!addr || typeof addr !== 'string') return false;
-  
-  // Contract addresses start with C and are 56 characters
-  if (addr.startsWith('C')) {
-    if (addr.length !== 56) return false;
-    // Validate base32 encoding
-    const dataPart = addr.slice(1);
-    return isValidBase32(dataPart);
-  }
-  
-  // Also accept NATIVE as a valid token identifier
-  if (addr === 'NATIVE') return true;
-  
-  // Also accept valid Stellar addresses as token addresses
-  return isValidStellarAddress(addr);
-};
-
-// Format amount with proper decimal handling
-const formatAmount = (value: string): string => {
-  // Remove any non-numeric characters except decimal point
-  let cleaned = value.replace(/[^0-9.]/g, '');
-  
-  // Ensure only one decimal point
-  const parts = cleaned.split('.');
-  if (parts.length > 2) {
-    cleaned = parts[0] + '.' + parts.slice(1).join('');
-  }
-  
-  // Limit decimal places to 7 (Stellar's maximum precision)
-  if (parts.length === 2 && parts[1].length > 7) {
-    cleaned = parts[0] + '.' + parts[1].slice(0, 7);
-  }
-  
-  return cleaned;
-};
-
-// Convert amount to stroops (smallest unit, 7 decimal places)
-const amountToStroops = (amount: string): string => {
-  if (!amount || isNaN(parseFloat(amount))) return '0';
-  
-  const num = parseFloat(amount);
-  // Multiply by 10^7 to convert to stroops
-  const stroops = Math.floor(num * 10000000);
-  return stroops.toString();
-};
 
 // Validation status indicator component
 const ValidationIndicator: React.FC<{ status: 'valid' | 'invalid' | 'empty' | 'pending' }> = ({ status }) => {
@@ -153,6 +67,9 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
   });
   
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
+  
+  // Track previous isOpen state to detect when modal opens
+  const prevIsOpenRef = useRef(isOpen);
 
   // Validate form fields
   const validateField = useCallback((field: keyof NewProposalFormData, value: string): string | undefined => {
@@ -171,7 +88,7 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
         }
         return undefined;
       
-      case 'amount':
+      case 'amount': {
         if (!value.trim()) return 'Amount is required';
         const numValue = parseFloat(value);
         if (isNaN(numValue) || numValue <= 0) {
@@ -181,6 +98,7 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
           return 'Amount exceeds maximum allowed value';
         }
         return undefined;
+      }
       
       case 'memo':
         // Memo is optional, no validation needed
@@ -191,23 +109,28 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
     }
   }, []);
 
-  // Validate all fields
-  const validateForm = useCallback(() => {
+  // Validate all fields and return errors (without setting state)
+  const getValidationErrors = useCallback((data: NewProposalFormData): ValidationErrors => {
     const errors: ValidationErrors = {};
     (['recipient', 'token', 'amount'] as const).forEach(field => {
-      const error = validateField(field, formData[field]);
+      const error = validateField(field, data[field]);
       if (error) errors[field] = error;
     });
-    setValidationErrors(errors);
-    return Object.keys(errors).length === 0;
-  }, [formData, validateField]);
+    return errors;
+  }, [validateField]);
 
-  // Update validation when form data changes
-  useEffect(() => {
-    if (touched.recipient || touched.token || touched.amount) {
-      validateForm();
+  // Compute validation errors based on form data and touched state
+  const computedErrors = useMemo(() => {
+    if (!touched.recipient && !touched.token && !touched.amount) {
+      return {};
     }
-  }, [formData, touched, validateForm]);
+    return getValidationErrors(formData);
+  }, [formData, touched, getValidationErrors]);
+
+  // Update validation errors state when computed errors change
+  useEffect(() => {
+    setValidationErrors(computedErrors);
+  }, [computedErrors]);
 
   // Handle field blur for validation
   const handleBlur = (field: keyof NewProposalFormData) => {
@@ -249,7 +172,10 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
       memo: true,
     });
     
-    if (validateForm()) {
+    const errors = getValidationErrors(formData);
+    setValidationErrors(errors);
+    
+    if (Object.keys(errors).length === 0) {
       onSubmit(e);
     }
   };
@@ -266,9 +192,9 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
     return () => window.removeEventListener('keydown', handleEscape);
   }, [isOpen, loading, onClose]);
 
-  // Reset touched state when modal opens
+  // Reset touched state when modal opens (using ref to detect transition)
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevIsOpenRef.current) {
       setTouched({
         recipient: false,
         token: false,
@@ -277,6 +203,7 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
       });
       setValidationErrors({});
     }
+    prevIsOpenRef.current = isOpen;
   }, [isOpen]);
 
   // Prevent body scroll when modal is open
@@ -506,31 +433,21 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
             </button>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-col gap-3 border-t border-gray-700 pt-4 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={loading}
-              className="min-h-[44px] w-full rounded-lg bg-gray-700 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:opacity-50 disabled:cursor-not-allowed sm:w-auto"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || !isFormValid}
-              className="min-h-[44px] w-full rounded-lg bg-purple-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Submitting...
-                </span>
-              ) : (
-                'Submit Proposal'
-              )}
-            </button>
-          </div>
+          {/* Submit Button */}
+          <button
+            type="submit"
+            disabled={loading || !isFormValid}
+            className="min-h-[44px] w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <span className="flex items-center justify-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Creating Proposal...
+              </span>
+            ) : (
+              'Create Proposal'
+            )}
+          </button>
         </form>
       </div>
     </div>
@@ -538,6 +455,3 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
 };
 
 export default NewProposalModal;
-
-// Export utility functions for testing
-export { isValidStellarAddress, isValidContractAddress, formatAmount, amountToStroops };
