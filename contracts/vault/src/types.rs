@@ -25,6 +25,10 @@ pub struct InitConfig {
     pub velocity_limit: VelocityConfig,
     /// Threshold strategy configuration
     pub threshold_strategy: ThresholdStrategy,
+    /// Pre-execution hooks
+    pub pre_execution_hooks: Vec<Address>,
+    /// Post-execution hooks
+    pub post_execution_hooks: Vec<Address>,
 }
 
 /// Vault configuration
@@ -48,6 +52,10 @@ pub struct Config {
     pub velocity_limit: VelocityConfig,
     /// Threshold strategy configuration
     pub threshold_strategy: ThresholdStrategy,
+    /// Pre-execution hooks
+    pub pre_execution_hooks: Vec<Address>,
+    /// Post-execution hooks
+    pub post_execution_hooks: Vec<Address>,
 }
 
 /// Threshold strategy for dynamic approval requirements

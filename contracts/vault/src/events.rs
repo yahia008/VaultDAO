@@ -111,3 +111,27 @@ pub fn emit_comment_edited(env: &Env, comment_id: u64, author: &Address) {
         author.clone(),
     );
 }
+
+/// Emit when a hook is registered
+pub fn emit_hook_registered(env: &Env, hook: &Address, is_pre: bool) {
+    env.events().publish(
+        (Symbol::new(env, "hook_registered"),),
+        (hook.clone(), is_pre),
+    );
+}
+
+/// Emit when a hook is removed
+pub fn emit_hook_removed(env: &Env, hook: &Address, is_pre: bool) {
+    env.events().publish(
+        (Symbol::new(env, "hook_removed"),),
+        (hook.clone(), is_pre),
+    );
+}
+
+/// Emit when a hook is executed
+pub fn emit_hook_executed(env: &Env, hook: &Address, proposal_id: u64, is_pre: bool) {
+    env.events().publish(
+        (Symbol::new(env, "hook_executed"), proposal_id),
+        (hook.clone(), is_pre),
+    );
+}

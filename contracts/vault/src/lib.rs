@@ -9,6 +9,7 @@ mod errors;
 mod events;
 mod storage;
 mod test;
+mod test_hooks;
 mod token;
 mod types;
 
@@ -76,6 +77,8 @@ impl VaultDAO {
             timelock_delay: config.timelock_delay,
             velocity_limit: config.velocity_limit,
             threshold_strategy: config.threshold_strategy,
+            pre_execution_hooks: config.pre_execution_hooks,
+            post_execution_hooks: config.post_execution_hooks,
         };
 
         // Store state
@@ -322,8 +325,23 @@ impl VaultDAO {
             return Err(VaultError::InsufficientBalance);
         }
 
+        // Execute pre-execution hooks
+        let config = storage::get_config(&env)?;
+        for i in 0..config.pre_execution_hooks.len() {
+            if let Some(hook) = config.pre_execution_hooks.get(i) {
+                Self::call_hook(&env, &hook, proposal_id, true);
+            }
+        }
+
         // Execute transfer
         token::transfer(&env, &proposal.token, &proposal.recipient, proposal.amount);
+
+        // Execute post-execution hooks
+        for i in 0..config.post_execution_hooks.len() {
+            if let Some(hook) = config.post_execution_hooks.get(i) {
+                Self::call_hook(&env, &hook, proposal_id, false);
+            }
+        }
 
         // Update proposal status
         proposal.status = ProposalStatus::Executed;
@@ -1029,5 +1047,122 @@ impl VaultDAO {
     /// Get a single comment by ID
     pub fn get_comment(env: Env, comment_id: u64) -> Result<Comment, VaultError> {
         storage::get_comment(&env, comment_id)
+    }
+
+    // ========================================================================
+    // Execution Hooks
+    // ========================================================================
+
+    /// Register a pre-execution hook
+    pub fn register_pre_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        if config.pre_execution_hooks.contains(&hook) {
+            return Err(VaultError::SignerAlreadyExists);
+        }
+
+        config.pre_execution_hooks.push_back(hook.clone());
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_hook_registered(&env, &hook, true);
+
+        Ok(())
+    }
+
+    /// Register a post-execution hook
+    pub fn register_post_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        if config.post_execution_hooks.contains(&hook) {
+            return Err(VaultError::SignerAlreadyExists);
+        }
+
+        config.post_execution_hooks.push_back(hook.clone());
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_hook_registered(&env, &hook, false);
+
+        Ok(())
+    }
+
+    /// Remove a pre-execution hook
+    pub fn remove_pre_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        let mut found_idx: Option<u32> = None;
+        for i in 0..config.pre_execution_hooks.len() {
+            if config.pre_execution_hooks.get(i).unwrap() == hook {
+                found_idx = Some(i);
+                break;
+            }
+        }
+
+        let idx = found_idx.ok_or(VaultError::SignerNotFound)?;
+        config.pre_execution_hooks.remove(idx);
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_hook_removed(&env, &hook, true);
+
+        Ok(())
+    }
+
+    /// Remove a post-execution hook
+    pub fn remove_post_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        let mut found_idx: Option<u32> = None;
+        for i in 0..config.post_execution_hooks.len() {
+            if config.post_execution_hooks.get(i).unwrap() == hook {
+                found_idx = Some(i);
+                break;
+            }
+        }
+
+        let idx = found_idx.ok_or(VaultError::SignerNotFound)?;
+        config.post_execution_hooks.remove(idx);
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_hook_removed(&env, &hook, false);
+
+        Ok(())
+    }
+
+    /// Internal helper to call a hook contract
+    fn call_hook(env: &Env, hook: &Address, proposal_id: u64, is_pre: bool) {
+        let _ = env.invoke_contract::<()>(
+            hook,
+            &Symbol::new(env, if is_pre { "pre_execute" } else { "post_execute" }),
+            (proposal_id,).into_val(env),
+        );
+        
+        events::emit_hook_executed(env, hook, proposal_id, is_pre);
     }
 }
