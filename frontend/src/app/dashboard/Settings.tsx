@@ -6,6 +6,7 @@ import {
 } from '../../utils/exportHistory';
 import { Download, Trash2, FileText, Shield } from 'lucide-react';
 import RecipientListManagement from '../../components/RecipientListManagement';
+import RoleManagement from '../../components/RoleManagement';
 
 /** Item with stored content for re-download (when ExportModal saves it) */
 interface ExportItemWithContent extends ExportHistoryItem {
@@ -164,23 +165,9 @@ const Settings: React.FC = () => {
       <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
         <p className="text-gray-400">Configuration options will appear here.</p>
       </div>
-
-      {showCloner && (
-        <VaultCloner
-          currentConfig={currentVaultConfig}
-          onClone={handleCloneVault}
-          onClose={() => setShowCloner(false)}
-        />
-      )}
-
-      {showDeployVault && (
-        <DeployVault
-          onDeploy={handleDeployVault}
-          onClose={() => setShowDeployVault(false)}
-        />
-      )}
     </div>
   );
 };
+
 
 export default Settings;

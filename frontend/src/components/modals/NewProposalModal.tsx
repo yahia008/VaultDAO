@@ -1,17 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useVaultContract } from '../../hooks/useVaultContract';
+import { CheckCircle2, AlertCircle, Loader2, X } from 'lucide-react';
 
 export interface NewProposalFormData {
   recipient: string;
   token: string;
   amount: string;
   memo: string;
-}
-
-interface ValidationErrors {
-  recipient?: string;
-  token?: string;
-  amount?: string;
 }
 
 interface NewProposalModalProps {
@@ -30,11 +25,11 @@ interface NewProposalModalProps {
 // Validation status indicator component
 const ValidationIndicator: React.FC<{ status: 'valid' | 'invalid' | 'empty' | 'pending' }> = ({ status }) => {
   if (status === 'empty') return null;
-  
+
   return (
     <div className="absolute right-3 top-1/2 -translate-y-1/2">
       {status === 'valid' && (
-        <CheckCircle className="h-5 w-5 text-green-500" aria-label="Valid" />
+        <CheckCircle2 className="h-5 w-5 text-green-500" aria-label="Valid" />
       )}
       {status === 'invalid' && (
         <AlertCircle className="h-5 w-5 text-red-500" aria-label="Invalid" />
@@ -62,30 +57,16 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
   const [recipientError, setRecipientError] = useState<string | null>(null);
   const [listMode, setListMode] = useState<string>('Disabled');
 
-  useEffect(() => {
-    if (isOpen) {
-      loadListMode();
-    }
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (formData.recipient && listMode !== 'Disabled') {
-      validateRecipient();
-    } else {
-      setRecipientError(null);
-    }
-  }, [formData.recipient, listMode]);
-
-  const loadListMode = async () => {
+  const loadListMode = useCallback(async () => {
     try {
       const mode = await getListMode();
       setListMode(mode);
     } catch (error) {
       console.error('Failed to load list mode:', error);
     }
-  };
+  }, [getListMode]);
 
-  const validateRecipient = async () => {
+  const validateRecipient = useCallback(async () => {
     if (!formData.recipient) {
       setRecipientError(null);
       return;
@@ -93,15 +74,15 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
 
     try {
       if (listMode === 'Whitelist') {
-        const whitelisted = await isWhitelisted(formData.recipient);
-        if (!whitelisted) {
+        const allowed = await isWhitelisted(formData.recipient);
+        if (!allowed) {
           setRecipientError('This address is not on the whitelist');
         } else {
           setRecipientError(null);
         }
       } else if (listMode === 'Blacklist') {
-        const blacklisted = await isBlacklisted(formData.recipient);
-        if (blacklisted) {
+        const blocked = await isBlacklisted(formData.recipient);
+        if (blocked) {
           setRecipientError('This address is blacklisted');
         } else {
           setRecipientError(null);
@@ -110,21 +91,35 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
     } catch (error) {
       console.error('Failed to validate recipient:', error);
     }
-  };
+  }, [formData.recipient, listMode, isWhitelisted, isBlacklisted]);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadListMode();
+    }
+  }, [isOpen, loadListMode]);
+
+  useEffect(() => {
+    if (formData.recipient && listMode !== 'Disabled') {
+      validateRecipient();
+    } else {
+      setRecipientError(null);
+    }
+  }, [formData.recipient, listMode, validateRecipient]);
 
   if (!isOpen) {
     return null;
   }
 
   return (
-    <div 
+    <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm transition-opacity"
-      onClick={handleBackdropClick}
+      onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      <div 
+      <div
         className="relative w-full max-w-[600px] rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
@@ -228,10 +223,10 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
                 {loading ? 'Submitting...' : 'Submit Proposal'}
               </button>
             </div>
-            {touched.token && validationErrors.token && (
+            {formData.token && recipientError.token && (
               <p id="token-error" className="flex items-center gap-1 text-xs text-red-400">
                 <AlertCircle className="h-3 w-3" />
-                {validationErrors.token}
+                {recipientError.token}
               </p>
             )}
             <p className="text-xs text-gray-500">
@@ -251,30 +246,28 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
                 inputMode="decimal"
                 value={formData.amount}
                 onChange={(e) => handleAmountChange(e.target.value)}
-                onBlur={() => handleBlur('amount')}
                 placeholder="0.0000000"
                 disabled={loading}
-                className={`w-full rounded-lg border bg-gray-800 px-3 py-3 pr-10 text-sm text-white placeholder-gray-500 transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 min-h-[44px] ${
-                  touched.amount && validationErrors.amount
-                    ? 'border-red-500 focus:border-red-500'
-                    : touched.amount && !validationErrors.amount
+                className={`w-full rounded-lg border bg-gray-800 px-3 py-3 pr-10 text-sm text-white placeholder-gray-500 transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 min-h-[44px] ${formData.amount && recipientError.amount
+                  ? 'border-red-500 focus:border-red-500'
+                  : formData.amount && !recipientError.amount
                     ? 'border-green-500 focus:border-green-500'
                     : 'border-gray-600 focus:border-purple-500'
-                }`}
-                aria-describedby={validationErrors.amount ? 'amount-error' : 'amount-hint'}
-                aria-invalid={touched.amount && !!validationErrors.amount}
+                  }`}
+                aria-describedby={recipientError.amount ? 'amount-error' : 'amount-hint'}
+                aria-invalid={formData.amount && !!recipientError.amount}
               />
-              <ValidationIndicator 
+              <ValidationIndicator
                 status={
-                  !touched.amount ? 'empty' :
-                  validationErrors.amount ? 'invalid' : 'valid'
-                } 
+                  !formData.amount ? 'empty' :
+                    recipientError.amount ? 'invalid' : 'valid'
+                }
               />
             </div>
-            {touched.amount && validationErrors.amount && (
+            {formData.amount && recipientError.amount && (
               <p id="amount-error" className="flex items-center gap-1 text-xs text-red-400">
                 <AlertCircle className="h-3 w-3" />
-                {validationErrors.amount}
+                {recipientError}
               </p>
             )}
             <p id="amount-hint" className="text-xs text-gray-500">
@@ -291,7 +284,6 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
               id="memo"
               value={formData.memo}
               onChange={(e) => onFieldChange('memo', e.target.value)}
-              onBlur={() => handleBlur('memo')}
               placeholder="Add a description or note for this proposal..."
               disabled={loading}
               rows={3}
@@ -322,17 +314,13 @@ const NewProposalModal: React.FC<NewProposalModalProps> = ({
             <button
               type="button"
               onClick={onSaveAsTemplate}
-              disabled={loading || !isFormValid}
-              className="min-h-[44px] flex-1 rounded-lg border border-gray-600 bg-gray-800 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Save as Template
             </button>
           </div>
 
           {/* Submit Button */}
           <button
             type="submit"
-            disabled={loading || !isFormValid}
+            disabled={loading || !!recipientError}
             className="min-h-[44px] w-full rounded-lg bg-purple-600 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (

@@ -41,8 +41,8 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
             await setListMode(newMode);
             setModeState(newMode);
             notify('config_updated', 'List mode updated successfully', 'success');
-        } catch (error: any) {
-            notify('config_updated', `Failed to update mode: ${error.message}`, 'error');
+        } catch (error: unknown) {
+            notify('config_updated', `Failed to update mode: ${error instanceof Error ? error instanceof Error ? error.message : "Failed" : "Failed"}`, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -66,8 +66,8 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
                 notify('config_updated', 'Address added to blacklist', 'success');
             }
             setNewAddress('');
-        } catch (error: any) {
-            notify('config_updated', `Failed to add address: ${error.message}`, 'error');
+        } catch (error: unknown) {
+            notify('config_updated', `Failed to add address: ${error instanceof Error ? error instanceof Error ? error.message : "Failed" : "Failed"}`, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -85,8 +85,8 @@ export default function RecipientListManagement({ onClose }: RecipientListManage
                 setBlacklistAddresses(blacklistAddresses.filter(a => a !== address));
                 notify('config_updated', 'Address removed from blacklist', 'success');
             }
-        } catch (error: any) {
-            notify('config_updated', `Failed to remove address: ${error.message}`, 'error');
+        } catch (error: unknown) {
+            notify('config_updated', `Failed to remove address: ${error instanceof Error ? error instanceof Error ? error.message : "Failed" : "Failed"}`, 'error');
         } finally {
             setIsLoading(false);
         }

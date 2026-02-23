@@ -593,6 +593,77 @@ export const useVaultContract = () => {
         }
     };
 
+    const getVaultBalance = useCallback(async () => {
+        console.log('Getting vault balance');
+        return Promise.resolve('1000000');
+    }, []);
+
+    const getRecurringPayments = useCallback(async () => {
+        console.log('Getting recurring payments');
+        return Promise.resolve([]);
+    }, []);
+
+    const getRecurringPaymentHistory = useCallback(async (id: unknown) => {
+        console.log('Getting recurring payment history', id);
+        return Promise.resolve([]);
+    }, []);
+
+    const schedulePayment = useCallback(async (data: unknown) => {
+        console.log('Scheduling payment', data);
+        return Promise.resolve();
+    }, []);
+
+    const executeRecurringPayment = useCallback(async (id: unknown) => {
+        console.log('Executing recurring payment', id);
+        return Promise.resolve();
+    }, []);
+
+    const cancelRecurringPayment = useCallback(async (id: unknown) => {
+        console.log('Cancelling recurring payment', id);
+        return Promise.resolve();
+    }, []);
+
+    const getProposalSignatures = useCallback(async (proposalId: number) => {
+        console.log('Getting signatures for proposal:', proposalId);
+        return Promise.resolve([
+            { address: 'GABC...XYZ', name: 'Signer 1', signed: true, timestamp: new Date().toISOString() },
+            { address: 'GDEF...UVW', name: 'Signer 2', signed: false, timestamp: undefined },
+        ]);
+    }, []);
+
+    const remindSigner = useCallback(async (proposalId: number, signerAddress: string) => {
+        console.log('Reminding signer:', signerAddress, 'for proposal:', proposalId);
+        return Promise.resolve();
+    }, []);
+
+    const exportSignatures = useCallback(async (proposalId: number) => {
+        console.log('Exporting signatures for proposal:', proposalId);
+        return Promise.resolve();
+    }, []);
+
+    const getUserRole = useCallback(async () => {
+        console.log('Getting user role');
+        return Promise.resolve(2);
+    }, []);
+
+    const getAllRoles = useCallback(async () => {
+        console.log('Getting all roles');
+        return Promise.resolve([
+            { address: 'GABC...XYZ', role: 2 },
+            { address: 'GDEF...UVW', role: 1 },
+        ]);
+    }, []);
+
+    const assignRole = useCallback(async (address: string, role: number) => {
+        console.log('Assigning role:', role, 'to:', address);
+        return Promise.resolve();
+    }, []);
+
+    const revokeRole = useCallback(async (address: string) => {
+        console.log('Revoking role for:', address);
+        return Promise.resolve();
+    }, []);
+
     return {
         proposeTransfer,
         rejectProposal,
@@ -607,6 +678,19 @@ export const useVaultContract = () => {
         addToBlacklist,
         removeFromBlacklist,
         isWhitelisted,
-        isBlacklisted
+        isBlacklisted,
+        getVaultBalance,
+        getRecurringPayments,
+        getRecurringPaymentHistory,
+        schedulePayment,
+        executeRecurringPayment,
+        cancelRecurringPayment,
+        getProposalSignatures,
+        remindSigner,
+        exportSignatures,
+        getUserRole,
+        getAllRoles,
+        assignRole,
+        revokeRole,
     };
 };

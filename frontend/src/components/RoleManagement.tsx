@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Shield, UserPlus, Search, Users } from 'lucide-react';
 import { useVaultContract } from '../hooks/useVaultContract';
 import { useToast } from '../hooks/useToast';
@@ -22,10 +22,10 @@ const ROLE_PERMISSIONS = {
 };
 
 const RoleManagement: React.FC = () => {
-  const { getAllRoles, setRole, getUserRole, loading } = useVaultContract();
-  const { showToast } = useToast();
+  const { getAllRoles, assignRole, getUserRole, loading } = useVaultContract();
+  const { notify } = useToast();
   const [currentUserRole, setCurrentUserRole] = useState<number>(0);
-  const [roleAssignments, setRoleAssignments] = useState<RoleAssignment[]>([]);
+  const [roleAssignments, assignRoleAssignments] = useState<RoleAssignment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [newAddress, setNewAddress] = useState('');
   const [selectedRole, setSelectedRole] = useState<number>(0);
@@ -48,7 +48,7 @@ const RoleManagement: React.FC = () => {
       
       if (role === 2) {
         const roles = await getAllRoles();
-        setRoleAssignments(roles);
+        assignRoleAssignments(roles);
       }
     } catch (error) {
       console.error('Failed to load role data:', error);
@@ -61,13 +61,13 @@ const RoleManagement: React.FC = () => {
 
   const handleAssignRole = () => {
     if (!validateStellarAddress(newAddress)) {
-      showToast('Invalid Stellar address format', 'error');
+      notify("config_updated", "Invalid Stellar address format", "error");
       return;
     }
 
     const existing = roleAssignments.find(r => r.address === newAddress);
     if (existing) {
-      showToast('Address already has a role. Use Change Role instead.', 'warning');
+      notify("config_updated", "Address already has a role. Use Change Role instead.", "info");
       return;
     }
 
@@ -105,11 +105,11 @@ const RoleManagement: React.FC = () => {
       if (!address) return;
 
       if (type === 'revoke') {
-        await setRole(address, 0);
-        showToast('Role revoked successfully', 'success');
+        await assignRole(address, 0);
+        notify("config_updated", 'Role revoked successfully', 'success');
       } else {
-        await setRole(address, newRole ?? 0);
-        showToast(`Role ${type === 'assign' ? 'assigned' : 'changed'} successfully`, 'success');
+        await assignRole(address, newRole ?? 0);
+        notify("config_updated", `Role ${type === 'assign' ? 'assigned' : 'changed'} successfully`, 'success');
       }
 
       if (type === 'assign') {
@@ -118,8 +118,8 @@ const RoleManagement: React.FC = () => {
       }
 
       await loadData();
-    } catch (error: any) {
-      showToast(error.message || 'Failed to update role', 'error');
+    } catch (error: unknown) {
+      notify("config_updated", error instanceof Error ? error.message : "Failed to update role", "error");
     } finally {
       setConfirmModal({ isOpen: false, type: 'assign' });
     }
