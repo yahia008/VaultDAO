@@ -98,6 +98,7 @@ impl VaultDAO {
             velocity_limit: config.velocity_limit,
             threshold_strategy: config.threshold_strategy,
             default_voting_deadline: config.default_voting_deadline,
+            veto_addresses: config.veto_addresses,
         };
 
         // Store state
@@ -791,6 +792,40 @@ impl VaultDAO {
 
         // Update performance metrics
         storage::metrics_on_rejection(&env);
+
+        Ok(())
+    }
+
+    /// Veto a proposal. Can be called only by configured veto addresses.
+    ///
+    /// A veto moves a proposal to `Vetoed` and removes it from the priority queue.
+    /// Vetoed proposals are blocked from execution.
+    pub fn veto_proposal(env: Env, vetoer: Address, proposal_id: u64) -> Result<(), VaultError> {
+        vetoer.require_auth();
+
+        if !storage::is_veto_address(&env, &vetoer)? {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        if proposal.status == ProposalStatus::Executed {
+            return Err(VaultError::ProposalAlreadyExecuted);
+        }
+        if proposal.status == ProposalStatus::Vetoed {
+            return Ok(());
+        }
+        if proposal.status != ProposalStatus::Pending && proposal.status != ProposalStatus::Approved
+        {
+            return Err(VaultError::ProposalNotPending);
+        }
+
+        proposal.status = ProposalStatus::Vetoed;
+        storage::set_proposal(&env, &proposal);
+        storage::remove_from_priority_queue(&env, proposal.priority.clone() as u32, proposal_id);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_proposal_vetoed(&env, proposal_id, &vetoer);
 
         Ok(())
     }

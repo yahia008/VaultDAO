@@ -30,6 +30,8 @@ pub struct InitConfig {
     pub threshold_strategy: ThresholdStrategy,
     /// Default voting deadline in ledgers (0 = no deadline)
     pub default_voting_deadline: u64,
+    /// Addresses allowed to veto proposals.
+    pub veto_addresses: Vec<Address>,
 }
 
 /// Vault configuration
@@ -58,6 +60,8 @@ pub struct Config {
     pub threshold_strategy: ThresholdStrategy,
     /// Default voting deadline in ledgers (0 = no deadline)
     pub default_voting_deadline: u64,
+    /// Addresses allowed to veto proposals.
+    pub veto_addresses: Vec<Address>,
 }
 
 /// Audit record for a cancelled proposal
@@ -137,6 +141,8 @@ pub enum ProposalStatus {
     Expired = 4,
     /// Cancelled by proposer or admin, with spending refunded.
     Cancelled = 5,
+    /// Blocked by a veto address; cannot be executed.
+    Vetoed = 6,
 }
 
 /// Proposal priority level for queue ordering
