@@ -19,10 +19,9 @@ pub use types::InitConfig;
 use errors::VaultError;
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Symbol, Vec};
 use types::{
-    Comment, Condition, ConditionLogic, Config, CrossVaultConfig, CrossVaultProposal,
-    CrossVaultStatus, Dispute, DisputeResolution, DisputeStatus, GasConfig, InsuranceConfig,
-    ListMode, NotificationPreferences, Priority, Proposal, ProposalStatus, Reputation, RetryConfig,
-    RetryState, Role, ThresholdStrategy, VaultAction, VaultMetrics,
+    Comment, Condition, ConditionLogic, Config, GasConfig, InsuranceConfig, ListMode,
+    NotificationPreferences, Priority, Proposal, ProposalStatus, Reputation, RetryConfig,
+    RetryState, Role, ThresholdStrategy, VaultMetrics,
 };
 
 /// The main contract structure for VaultDAO.
@@ -41,7 +40,8 @@ const MAX_BATCH_SIZE: u32 = 10;
 /// Maximum metadata entries stored per proposal
 const MAX_METADATA_ENTRIES: u32 = 16;
 
-/// Maximum actions in a cross-vault proposal
+/// Maximum actions in a cross-vault proposal (unused - feature not implemented)
+#[allow(dead_code)]
 const MAX_CROSS_VAULT_ACTIONS: u32 = 5;
 
 /// Maximum length for a single metadata value
@@ -1506,7 +1506,10 @@ impl VaultDAO {
     }
 
     /// Get subscription details
-    pub fn get_subscription(env: Env, subscription_id: u64) -> Result<types::Subscription, VaultError> {
+    pub fn get_subscription(
+        env: Env,
+        subscription_id: u64,
+    ) -> Result<types::Subscription, VaultError> {
         storage::get_subscription(&env, subscription_id)
     }
 
@@ -2963,9 +2966,11 @@ impl VaultDAO {
         storage::get_swap_result(&env, proposal_id)
     }
 
+    /*
     // ========================================================================
     // Cross-Vault Proposal Coordination (Issue: feature/cross-vault-coordination)
     // ========================================================================
+    // TODO: Implement cross-vault types and storage functions before enabling
 
     /// Configure cross-vault participation for this vault.
     ///
@@ -3430,6 +3435,7 @@ impl VaultDAO {
     pub fn get_proposal_dispute(env: Env, proposal_id: u64) -> Option<u64> {
         storage::get_proposal_dispute(&env, proposal_id)
     }
+    */
 
     // ========================================================================
     // Retry Helpers (private)
