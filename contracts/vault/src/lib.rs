@@ -17,11 +17,11 @@ mod types;
 pub use types::InitConfig;
 
 use errors::VaultError;
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Symbol, Vec};
 use types::{
     Comment, Condition, ConditionLogic, Config, GasConfig, InsuranceConfig, ListMode,
-    NotificationPreferences, Priority, Proposal, ProposalStatus, Reputation, Role,
-    ThresholdStrategy, VaultMetrics,
+    NotificationPreferences, Priority, Proposal, ProposalStatus, Reputation, RetryConfig,
+    RetryState, Role, ThresholdStrategy, VaultMetrics,
 };
 
 /// The main contract structure for VaultDAO.
@@ -36,6 +36,12 @@ const PROPOSAL_EXPIRY_LEDGERS: u64 = 120_960;
 
 /// Maximum proposals that can be batch-executed in one call (gas limit)
 const MAX_BATCH_SIZE: u32 = 10;
+
+/// Maximum metadata entries stored per proposal
+const MAX_METADATA_ENTRIES: u32 = 16;
+
+/// Maximum length for a single metadata value
+const MAX_METADATA_VALUE_LEN: u32 = 256;
 
 /// Reputation adjustments
 const REP_EXEC_PROPOSER: u32 = 10;
@@ -98,6 +104,7 @@ impl VaultDAO {
             velocity_limit: config.velocity_limit,
             threshold_strategy: config.threshold_strategy,
             default_voting_deadline: config.default_voting_deadline,
+            retry_config: config.retry_config,
         };
 
         // Store state
@@ -244,6 +251,8 @@ impl VaultDAO {
             token: token_addr.clone(),
             amount,
             memo,
+            metadata: Map::new(&env),
+            tags: Vec::new(&env),
             approvals: Vec::new(&env),
             abstentions: Vec::new(&env),
             attachments: Vec::new(&env),
@@ -449,6 +458,8 @@ impl VaultDAO {
                 token: transfer.token.clone(),
                 amount: transfer.amount,
                 memo: transfer.memo.clone(),
+                metadata: Map::new(&env),
+                tags: Vec::new(&env),
                 approvals: Vec::new(&env),
                 abstentions: Vec::new(&env),
                 attachments: Vec::new(&env),
@@ -656,80 +667,129 @@ impl VaultDAO {
             return Err(VaultError::TimelockNotExpired);
         }
 
-        // Evaluate execution conditions (if any) before balance check
-        if !proposal.conditions.is_empty() {
-            Self::evaluate_conditions(&env, &proposal)?;
+        // Enforce retry constraints if this is a retry attempt
+        let config = storage::get_config(&env)?;
+        if let Some(retry_state) = storage::get_retry_state(&env, proposal_id) {
+            if retry_state.retry_count > 0 {
+                // Check if max retries exhausted
+                if config.retry_config.enabled
+                    && retry_state.retry_count >= config.retry_config.max_retries
+                {
+                    return Err(VaultError::MaxRetriesExceeded);
+                }
+                // Check backoff period
+                if current_ledger < retry_state.next_retry_ledger {
+                    return Err(VaultError::RetryBackoffNotElapsed);
+                }
+            }
         }
 
-        // Gas limit check: estimate execution cost and enforce limit
-        let gas_cfg = storage::get_gas_config(&env);
-        let estimated_gas =
-            gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
-        if proposal.gas_limit > 0 && estimated_gas > proposal.gas_limit {
-            events::emit_gas_limit_exceeded(&env, proposal_id, estimated_gas, proposal.gas_limit);
-            return Err(VaultError::GasLimitExceeded);
+        // Attempt execution — retryable failures are handled below
+        let exec_result =
+            Self::try_execute_transfer(&env, &executor, &mut proposal, current_ledger);
+
+        match exec_result {
+            Ok(()) => {
+                // Update proposal status
+                proposal.status = ProposalStatus::Executed;
+                storage::set_proposal(&env, &proposal);
+                storage::extend_instance_ttl(&env);
+
+                // Emit execution event (rich: includes token and ledger)
+                events::emit_proposal_executed(
+                    &env,
+                    proposal_id,
+                    &executor,
+                    &proposal.recipient,
+                    &proposal.token,
+                    proposal.amount,
+                    current_ledger,
+                );
+
+                // Update reputation: proposer +10, each approver +5
+                Self::update_reputation_on_execution(&env, &proposal);
+
+                // Update performance metrics
+                let gas_cfg = storage::get_gas_config(&env);
+                let estimated_gas =
+                    gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
+                let execution_time = current_ledger.saturating_sub(proposal.created_at);
+                storage::metrics_on_execution(&env, estimated_gas, execution_time);
+                let metrics = storage::get_metrics(&env);
+                events::emit_metrics_updated(
+                    &env,
+                    metrics.executed_count,
+                    metrics.rejected_count,
+                    metrics.expired_count,
+                    metrics.success_rate_bps(),
+                );
+
+                Ok(())
+            }
+            Err(err) if Self::is_retryable_error(&err) => {
+                // Check if retry is configured
+                if !config.retry_config.enabled {
+                    return Err(err);
+                }
+
+                // Schedule retry and return Ok — Soroban rolls back state on Err,
+                // so we must return Ok to persist the retry state. The proposal
+                // remains in Approved status, signaling that execution is pending.
+                Self::schedule_retry(
+                    &env,
+                    proposal_id,
+                    &config.retry_config,
+                    current_ledger,
+                    &err,
+                )?;
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Explicitly retry a previously failed proposal execution.
+    ///
+    /// This is used when a proposal execution failed with a retryable error
+    /// and a retry was automatically scheduled. The caller can invoke this
+    /// after the backoff period has elapsed.
+    pub fn retry_execution(
+        env: Env,
+        executor: Address,
+        proposal_id: u64,
+    ) -> Result<(), VaultError> {
+        executor.require_auth();
+
+        let config = storage::get_config(&env)?;
+        if !config.retry_config.enabled {
+            return Err(VaultError::RetryNotEnabled);
         }
 
-        // Check vault balance (account for insurance amount that is also held in vault)
-        let balance = token::balance(&env, &proposal.token);
-        if balance < proposal.amount + proposal.insurance_amount {
-            return Err(VaultError::InsufficientBalance);
+        let retry_state = storage::get_retry_state(&env, proposal_id).unwrap_or(RetryState {
+            retry_count: 0,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        });
+
+        if retry_state.retry_count >= config.retry_config.max_retries {
+            return Err(VaultError::MaxRetriesExceeded);
         }
 
-        // Execute transfer
-        token::transfer(&env, &proposal.token, &proposal.recipient, proposal.amount);
-
-        // Return insurance to proposer on success
-        if proposal.insurance_amount > 0 {
-            token::transfer(
-                &env,
-                &proposal.token,
-                &proposal.proposer,
-                proposal.insurance_amount,
-            );
-            events::emit_insurance_returned(
-                &env,
-                proposal_id,
-                &proposal.proposer,
-                proposal.insurance_amount,
-            );
+        let current_ledger = env.ledger().sequence() as u64;
+        if retry_state.retry_count > 0 && current_ledger < retry_state.next_retry_ledger {
+            return Err(VaultError::RetryBackoffNotElapsed);
         }
 
-        // Record gas used on the proposal
-        proposal.gas_used = estimated_gas;
+        // Emit retry attempt event
+        events::emit_retry_attempted(&env, proposal_id, retry_state.retry_count + 1, &executor);
 
-        // Update proposal status
-        proposal.status = ProposalStatus::Executed;
-        storage::set_proposal(&env, &proposal);
-        storage::extend_instance_ttl(&env);
+        // Delegate to execute_proposal for the actual attempt
+        Self::execute_proposal(env, executor, proposal_id)
+    }
 
-        // Emit execution event (rich: includes token and ledger)
-        events::emit_proposal_executed(
-            &env,
-            proposal_id,
-            &executor,
-            &proposal.recipient,
-            &proposal.token,
-            proposal.amount,
-            current_ledger,
-        );
-
-        // Update reputation: proposer +10, each approver +5
-        Self::update_reputation_on_execution(&env, &proposal);
-
-        // Update performance metrics
-        let execution_time = current_ledger.saturating_sub(proposal.created_at);
-        storage::metrics_on_execution(&env, estimated_gas, execution_time);
-        let metrics = storage::get_metrics(&env);
-        events::emit_metrics_updated(
-            &env,
-            metrics.executed_count,
-            metrics.rejected_count,
-            metrics.expired_count,
-            metrics.success_rate_bps(),
-        );
-
-        Ok(())
+    /// Get the current retry state for a proposal.
+    pub fn get_retry_state(env: Env, proposal_id: u64) -> Option<RetryState> {
+        storage::get_retry_state(&env, proposal_id)
     }
 
     /// Reject a pending proposal.
@@ -1818,6 +1878,183 @@ impl VaultDAO {
     }
 
     // ========================================================================
+    // Metadata Management
+    // ========================================================================
+
+    /// Set or update a metadata key for a proposal.
+    ///
+    /// Only Admin or the original proposer can update metadata.
+    pub fn set_proposal_metadata(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+        key: Symbol,
+        value: String,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        let role = storage::get_role(&env, &caller);
+        if role != Role::Admin && caller != proposal.proposer {
+            return Err(VaultError::Unauthorized);
+        }
+
+        // Metadata validation: non-empty bounded value and bounded entry count.
+        let value_len = value.len();
+        if value_len == 0 || value_len > MAX_METADATA_VALUE_LEN {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let exists = proposal.metadata.get(key.clone()).is_some();
+        if !exists && proposal.metadata.len() >= MAX_METADATA_ENTRIES {
+            return Err(VaultError::ExceedsProposalLimit);
+        }
+
+        proposal.metadata.set(key, value);
+        storage::set_proposal(&env, &proposal);
+        storage::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Remove a metadata key from a proposal.
+    ///
+    /// Only Admin or the original proposer can remove metadata.
+    pub fn remove_proposal_metadata(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+        key: Symbol,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        let role = storage::get_role(&env, &caller);
+        if role != Role::Admin && caller != proposal.proposer {
+            return Err(VaultError::Unauthorized);
+        }
+
+        proposal.metadata.remove(key);
+        storage::set_proposal(&env, &proposal);
+        storage::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Get a single metadata value by key for a proposal.
+    pub fn get_proposal_metadata_value(
+        env: Env,
+        proposal_id: u64,
+        key: Symbol,
+    ) -> Result<Option<String>, VaultError> {
+        let proposal = storage::get_proposal(&env, proposal_id)?;
+        Ok(proposal.metadata.get(key))
+    }
+
+    /// Get the full metadata map for a proposal.
+    pub fn get_proposal_metadata(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<Map<Symbol, String>, VaultError> {
+        let proposal = storage::get_proposal(&env, proposal_id)?;
+        Ok(proposal.metadata)
+    }
+
+    // ========================================================================
+    // Tag Management
+    // ========================================================================
+
+    /// Add a tag to a proposal.
+    ///
+    /// Only Admin or the original proposer can add tags.
+    pub fn add_proposal_tag(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+        tag: Symbol,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        let role = storage::get_role(&env, &caller);
+        if role != Role::Admin && caller != proposal.proposer {
+            return Err(VaultError::Unauthorized);
+        }
+
+        if proposal.tags.contains(&tag) {
+            return Err(VaultError::AlreadyApproved); // duplicate tag
+        }
+
+        proposal.tags.push_back(tag);
+        storage::set_proposal(&env, &proposal);
+        storage::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Remove a tag from a proposal.
+    ///
+    /// Only Admin or the original proposer can remove tags.
+    pub fn remove_proposal_tag(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+        tag: Symbol,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)?;
+
+        let role = storage::get_role(&env, &caller);
+        if role != Role::Admin && caller != proposal.proposer {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut found = false;
+        for i in 0..proposal.tags.len() {
+            if proposal.tags.get(i).unwrap() == tag {
+                proposal.tags.remove(i);
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(VaultError::ProposalNotFound); // tag not found
+        }
+
+        storage::set_proposal(&env, &proposal);
+        storage::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Get all tags for a proposal.
+    pub fn get_proposal_tags(env: Env, proposal_id: u64) -> Result<Vec<Symbol>, VaultError> {
+        let proposal = storage::get_proposal(&env, proposal_id)?;
+        Ok(proposal.tags)
+    }
+
+    /// Get proposal IDs that include a specific tag.
+    pub fn get_proposals_by_tag(env: Env, tag: Symbol) -> Vec<u64> {
+        let mut proposal_ids = Vec::new(&env);
+        let next_id = storage::get_next_proposal_id(&env);
+
+        for proposal_id in 1..next_id {
+            if let Ok(proposal) = storage::get_proposal(&env, proposal_id) {
+                if proposal.tags.contains(&tag) {
+                    proposal_ids.push_back(proposal_id);
+                }
+            }
+        }
+
+        proposal_ids
+    }
+
+    // ========================================================================
     // Insurance Configuration (Issue: feature/proposal-insurance)
     // ========================================================================
 
@@ -2173,6 +2410,8 @@ impl VaultDAO {
             token: env.current_contract_address(),
             amount: 0,
             memo: Symbol::new(&env, "swap"),
+            metadata: Map::new(&env),
+            tags: Vec::new(&env),
             approvals: Vec::new(&env),
             abstentions: Vec::new(&env),
             attachments: Vec::new(&env),
@@ -2510,5 +2749,121 @@ impl VaultDAO {
     /// Get swap result for a proposal
     pub fn get_swap_result(env: Env, proposal_id: u64) -> Option<types::SwapResult> {
         storage::get_swap_result(&env, proposal_id)
+    }
+
+    // ========================================================================
+    // Retry Helpers (private)
+    // ========================================================================
+
+    /// Attempt the actual transfer for a proposal. Separated from execute_proposal
+    /// so that retryable failures can be caught and handled.
+    fn try_execute_transfer(
+        env: &Env,
+        _executor: &Address,
+        proposal: &mut Proposal,
+        _current_ledger: u64,
+    ) -> Result<(), VaultError> {
+        // Evaluate execution conditions (if any) before balance check
+        if !proposal.conditions.is_empty() {
+            Self::evaluate_conditions(env, proposal)?;
+        }
+
+        // Gas limit check
+        let gas_cfg = storage::get_gas_config(env);
+        let estimated_gas =
+            gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
+        if proposal.gas_limit > 0 && estimated_gas > proposal.gas_limit {
+            events::emit_gas_limit_exceeded(env, proposal.id, estimated_gas, proposal.gas_limit);
+            return Err(VaultError::GasLimitExceeded);
+        }
+
+        // Check vault balance (account for insurance amount that is also held in vault)
+        let balance = token::balance(env, &proposal.token);
+        if balance < proposal.amount + proposal.insurance_amount {
+            return Err(VaultError::InsufficientBalance);
+        }
+
+        // Execute transfer
+        token::transfer(env, &proposal.token, &proposal.recipient, proposal.amount);
+
+        // Return insurance to proposer on success
+        if proposal.insurance_amount > 0 {
+            token::transfer(
+                env,
+                &proposal.token,
+                &proposal.proposer,
+                proposal.insurance_amount,
+            );
+            events::emit_insurance_returned(
+                env,
+                proposal.id,
+                &proposal.proposer,
+                proposal.insurance_amount,
+            );
+        }
+
+        // Record gas used
+        proposal.gas_used = estimated_gas;
+
+        Ok(())
+    }
+
+    /// Check if an error is retryable (transient failure).
+    fn is_retryable_error(err: &VaultError) -> bool {
+        matches!(
+            err,
+            VaultError::InsufficientBalance | VaultError::ConditionsNotMet
+        )
+    }
+
+    /// Schedule a retry for a failed proposal execution with exponential backoff.
+    ///
+    /// Returns Ok(()) to signal that retry was scheduled (caller should also return Ok
+    /// to persist state), or Err(MaxRetriesExceeded) if all retries used up.
+    fn schedule_retry(
+        env: &Env,
+        proposal_id: u64,
+        retry_config: &RetryConfig,
+        current_ledger: u64,
+        err: &VaultError,
+    ) -> Result<(), VaultError> {
+        let mut retry_state = storage::get_retry_state(env, proposal_id).unwrap_or(RetryState {
+            retry_count: 0,
+            next_retry_ledger: 0,
+            last_retry_ledger: 0,
+        });
+
+        retry_state.retry_count += 1;
+
+        if retry_state.retry_count > retry_config.max_retries {
+            events::emit_retries_exhausted(env, proposal_id, retry_state.retry_count);
+            return Err(VaultError::MaxRetriesExceeded);
+        }
+
+        // Exponential backoff: initial_backoff * 2^(retry_count - 1), capped at 2^10
+        let exponent = core::cmp::min(retry_state.retry_count - 1, 10);
+        let backoff = retry_config.initial_backoff_ledgers * (1u64 << exponent);
+
+        retry_state.next_retry_ledger = current_ledger + backoff;
+        retry_state.last_retry_ledger = current_ledger;
+
+        storage::set_retry_state(env, proposal_id, &retry_state);
+
+        // Map error to a u32 code for the event
+        let error_code: u32 = match err {
+            VaultError::InsufficientBalance => 70,
+            VaultError::ConditionsNotMet => 140,
+            _ => 0,
+        };
+
+        events::emit_retry_scheduled(
+            env,
+            proposal_id,
+            retry_state.retry_count,
+            retry_state.next_retry_ledger,
+            error_code,
+        );
+
+        Ok(())
     }
 }

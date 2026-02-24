@@ -2,7 +2,7 @@
 //!
 //! Core data structures for the multisig treasury contract.
 
-use soroban_sdk::{contracttype, Address, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
 
 /// Initialization configuration - groups all config params to reduce function arguments
 #[contracttype]
@@ -30,6 +30,8 @@ pub struct InitConfig {
     pub threshold_strategy: ThresholdStrategy,
     /// Default voting deadline in ledgers (0 = no deadline)
     pub default_voting_deadline: u64,
+    /// Retry configuration for failed executions
+    pub retry_config: RetryConfig,
 }
 
 /// Vault configuration
@@ -58,6 +60,8 @@ pub struct Config {
     pub threshold_strategy: ThresholdStrategy,
     /// Default voting deadline in ledgers (0 = no deadline)
     pub default_voting_deadline: u64,
+    /// Retry configuration for failed executions
+    pub retry_config: RetryConfig,
 }
 
 /// Audit record for a cancelled proposal
@@ -201,6 +205,10 @@ pub struct Proposal {
     pub amount: i128,
     /// Optional memo/description
     pub memo: Symbol,
+    /// Extensible metadata map for proposal context and integration tags
+    pub metadata: Map<Symbol, String>,
+    /// Optional categorical labels for proposal filtering
+    pub tags: Vec<Symbol>,
     /// Addresses that have approved
     pub approvals: Vec<Address>,
     /// Addresses that explicitly abstained
@@ -572,4 +580,32 @@ pub struct TransferDetails {
     pub amount: i128,
     /// Optional memo
     pub memo: Symbol,
+}
+
+// ============================================================================
+// Execution Retry (Issue: feature/execution-retry)
+// ============================================================================
+
+/// Configuration for automatic retry of failed proposal executions
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RetryConfig {
+    /// Whether retry logic is enabled
+    pub enabled: bool,
+    /// Maximum number of retry attempts allowed per proposal
+    pub max_retries: u32,
+    /// Initial backoff period in ledgers before first retry (~5 sec/ledger)
+    pub initial_backoff_ledgers: u64,
+}
+
+/// Tracks retry state for a specific proposal execution
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RetryState {
+    /// Number of retry attempts made so far
+    pub retry_count: u32,
+    /// Earliest ledger when next retry is allowed (exponential backoff)
+    pub next_retry_ledger: u64,
+    /// Ledger of the last retry attempt
+    pub last_retry_ledger: u64,
 }
