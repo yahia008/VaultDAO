@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useVaultContract } from '../../hooks/useVaultContract';
 import FileUploader, { type UploadedAttachment } from '../FileUploader';
+import FormRenderer from '../FormRenderer';
+import type { FormConfig, FormSubmissionData } from '../../types/formBuilder';
 
 export interface NewProposalFormData {
   recipient: string;
