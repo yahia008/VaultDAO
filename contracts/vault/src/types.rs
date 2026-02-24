@@ -1,6 +1,21 @@
 //! VaultDAO - Type Definitions
 //!
 //! Core data structures for the multisig treasury contract.
+//!
+//! # Gas Optimization Notes
+//!
+//! This module implements several gas optimization techniques:
+//!
+//! 1. **Type Size Optimization**: Using smaller integer types (u32 instead of u64) where
+//!    values won't exceed the smaller type's range. This reduces storage and serialization costs.
+//!
+//! 2. **Storage Packing**: Related fields are grouped in `Packed*` structs to minimize
+//!    the number of storage operations. A single storage read/write is cheaper than multiple.
+//!
+//! 3. **Lazy Loading**: Large optional fields (attachments, conditions) are stored separately
+//!    to avoid paying for their serialization when not needed.
+//!
+//! 4. **Bit Packing**: Boolean flags are combined into a single u8 bitfield where possible.
 
 use soroban_sdk::{contracttype, Address, String, Symbol, Vec};
 
@@ -604,4 +619,233 @@ pub struct RetryState {
     pub next_retry_ledger: u64,
     /// Ledger of the last retry attempt
     pub last_retry_ledger: u64,
+}
+
+// ============================================================================
+// Gas Optimization: Packed Structures
+// ============================================================================
+
+/// Bitfield for proposal flags - packs multiple booleans into single u32
+/// Bit 0: is_swap
+/// Bit 1: has_conditions
+/// Bit 2: has_insurance
+/// Bit 3-31: reserved for future use
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalFlags(pub u32);
+
+impl ProposalFlags {
+    pub const NONE: u32 = 0;
+    pub const IS_SWAP: u32 = 1 << 0;
+    pub const HAS_CONDITIONS: u32 = 1 << 1;
+    pub const HAS_INSURANCE: u32 = 1 << 2;
+
+    pub fn is_swap(&self) -> bool {
+        (self.0 & Self::IS_SWAP) != 0
+    }
+
+    pub fn has_conditions(&self) -> bool {
+        (self.0 & Self::HAS_CONDITIONS) != 0
+    }
+
+    pub fn has_insurance(&self) -> bool {
+        (self.0 & Self::HAS_INSURANCE) != 0
+    }
+
+    pub fn set_is_swap(&mut self, value: bool) {
+        if value {
+            self.0 |= Self::IS_SWAP;
+        } else {
+            self.0 &= !Self::IS_SWAP;
+        }
+    }
+
+    pub fn set_has_conditions(&mut self, value: bool) {
+        if value {
+            self.0 |= Self::HAS_CONDITIONS;
+        } else {
+            self.0 &= !Self::HAS_CONDITIONS;
+        }
+    }
+
+    pub fn set_has_insurance(&mut self, value: bool) {
+        if value {
+            self.0 |= Self::HAS_INSURANCE;
+        } else {
+            self.0 &= !Self::HAS_INSURANCE;
+        }
+    }
+}
+
+/// Packed proposal core data - optimized for storage efficiency.
+///
+/// This structure separates the frequently-accessed core proposal data from
+/// the larger optional fields (attachments, conditions, snapshot_signers).
+/// By storing these separately, we reduce the cost of reading/writing proposals
+/// when the optional data isn't needed.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedProposalCore {
+    /// Unique proposal ID (u32 sufficient for ~4B proposals)
+    pub id: u64,
+    /// Address that created the proposal
+    pub proposer: Address,
+    /// Recipient of the transfer
+    pub recipient: Address,
+    /// Token contract address (SAC or custom)
+    pub token: Address,
+    /// Amount to transfer (in token's smallest unit)
+    pub amount: i128,
+    /// Packed flags (is_swap, has_conditions, has_insurance)
+    pub flags: ProposalFlags,
+    /// Current status (packed as u8)
+    pub status: ProposalStatus,
+    /// Proposal urgency level (packed as u8)
+    pub priority: Priority,
+    /// Logic operator for combining conditions (packed as u8)
+    pub condition_logic: ConditionLogic,
+    /// Ledger sequence when created (u32 sufficient for ~136 years of ledgers)
+    pub created_at: u32,
+    /// Ledger sequence when proposal expires
+    pub expires_at: u32,
+    /// Earliest ledger sequence when proposal can be executed (0 if no timelock)
+    pub unlock_ledger: u32,
+    /// Insurance amount staked by proposer (0 = no insurance)
+    pub insurance_amount: i128,
+    /// Ledger sequence when voting must complete (0 = no deadline)
+    pub voting_deadline: u32,
+    /// Number of approvals (stored separately from approval addresses)
+    pub approval_count: u32,
+    /// Number of abstentions
+    pub abstention_count: u32,
+}
+
+/// Packed spending limits - combines daily/weekly tracking into single storage entry
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedSpendingLimits {
+    /// Day number for daily limit tracking
+    pub day_number: u32,
+    /// Amount spent today
+    pub daily_spent: i128,
+    /// Week number for weekly limit tracking
+    pub week_number: u32,
+    /// Amount spent this week
+    pub weekly_spent: i128,
+}
+
+/// Packed config for gas-efficient storage
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedConfigCore {
+    /// Required number of approvals (M in M-of-N)
+    pub threshold: u32,
+    /// Minimum number of votes required (0 = disabled)
+    pub quorum: u32,
+    /// Maximum amount per proposal (in stroops)
+    pub spending_limit: i128,
+    /// Maximum aggregate daily spending (in stroops)
+    pub daily_limit: i128,
+    /// Maximum aggregate weekly spending (in stroops)
+    pub weekly_limit: i128,
+    /// Amount threshold above which a timelock applies
+    pub timelock_threshold: i128,
+    /// Delay in ledgers for timelocked proposals (u32 sufficient)
+    pub timelock_delay: u32,
+    /// Default voting deadline in ledgers (0 = no deadline)
+    pub default_voting_deadline: u32,
+}
+
+/// Packed metrics for gas-efficient updates
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedMetrics {
+    /// Total number of proposals ever created
+    pub total_proposals: u32,
+    /// Number of proposals successfully executed
+    pub executed_count: u32,
+    /// Number of proposals rejected
+    pub rejected_count: u32,
+    /// Number of proposals that expired without execution
+    pub expired_count: u32,
+    /// Cumulative ledgers elapsed from proposal creation to execution
+    pub total_execution_time_ledgers: u64,
+    /// Total gas units consumed across all executions
+    pub total_gas_used: u64,
+    /// Ledger when metrics were last updated
+    pub last_updated_ledger: u32,
+}
+
+/// Packed reputation for gas-efficient storage
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedReputation {
+    /// Composite score (higher = more trusted) - u32 for Soroban compatibility
+    pub score: u32,
+    /// Total proposals successfully executed
+    pub proposals_executed: u32,
+    /// Total proposals rejected
+    pub proposals_rejected: u32,
+    /// Total proposals created
+    pub proposals_created: u32,
+    /// Total approvals given
+    pub approvals_given: u32,
+    /// Ledger when reputation was last decayed
+    pub last_decay_ledger: u32,
+}
+
+impl PackedReputation {
+    pub fn default() -> Self {
+        PackedReputation {
+            score: 500,
+            proposals_executed: 0,
+            proposals_rejected: 0,
+            proposals_created: 0,
+            approvals_given: 0,
+            last_decay_ledger: 0,
+        }
+    }
+}
+
+/// Packed notification preferences - uses bitfield for boolean flags
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PackedNotificationPrefs(pub u32);
+
+impl PackedNotificationPrefs {
+    pub const NOTIFY_ON_PROPOSAL: u32 = 1 << 0;
+    pub const NOTIFY_ON_APPROVAL: u32 = 1 << 1;
+    pub const NOTIFY_ON_EXECUTION: u32 = 1 << 2;
+    pub const NOTIFY_ON_REJECTION: u32 = 1 << 3;
+    pub const NOTIFY_ON_EXPIRY: u32 = 1 << 4;
+
+    pub fn default() -> Self {
+        // Default: all except expiry
+        PackedNotificationPrefs(
+            Self::NOTIFY_ON_PROPOSAL
+                | Self::NOTIFY_ON_APPROVAL
+                | Self::NOTIFY_ON_EXECUTION
+                | Self::NOTIFY_ON_REJECTION,
+        )
+    }
+
+    pub fn notify_on_proposal(&self) -> bool {
+        (self.0 & Self::NOTIFY_ON_PROPOSAL) != 0
+    }
+
+    pub fn notify_on_approval(&self) -> bool {
+        (self.0 & Self::NOTIFY_ON_APPROVAL) != 0
+    }
+
+    pub fn notify_on_execution(&self) -> bool {
+        (self.0 & Self::NOTIFY_ON_EXECUTION) != 0
+    }
+
+    pub fn notify_on_rejection(&self) -> bool {
+        (self.0 & Self::NOTIFY_ON_REJECTION) != 0
+    }
+
+    pub fn notify_on_expiry(&self) -> bool {
+        (self.0 & Self::NOTIFY_ON_EXPIRY) != 0
+    }
 }

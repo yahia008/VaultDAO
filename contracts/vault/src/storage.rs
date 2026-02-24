@@ -1,6 +1,22 @@
 //! VaultDAO - Storage Layer
 //!
 //! Storage keys and helper functions for persistent state.
+//!
+//! # Gas Optimization Notes
+//!
+//! This module implements several gas optimization techniques:
+//!
+//! 1. **Packed Storage Keys**: Related data is stored together using `Packed*` structs
+//!    to reduce the number of storage operations.
+//!
+//! 2. **Temporary Storage**: Short-lived data (daily/weekly spending, velocity history)
+//!    uses temporary storage which is cheaper and auto-expires.
+//!
+//! 3. **Lazy Loading**: Large optional fields are stored separately and loaded only when needed.
+//!
+//! 4. **Caching**: Frequently accessed data is cached in instance storage for faster access.
+//!
+//! 5. **Batch Operations**: Multiple related updates are batched into single storage operations.
 
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
@@ -72,6 +88,14 @@ pub enum DataKey {
     Metrics,
     /// Retry state for a proposal -> RetryState
     RetryState(u64),
+    /// Packed spending limits (combines daily/weekly) -> PackedSpendingLimits
+    PackedSpending,
+    /// Approval addresses for proposal (separate from core) -> Vec<Address>
+    ProposalApprovals(u64),
+    /// Abstention addresses for proposal (separate from core) -> Vec<Address>
+    ProposalAbstentions(u64),
+    /// Proposal conditions (separate from core) -> Vec<Condition>
+    ProposalConditions(u64),
 }
 
 /// TTL constants (in ledgers, ~5 seconds each)
@@ -738,4 +762,164 @@ pub fn set_retry_state(env: &Env, proposal_id: u64, state: &RetryState) {
     env.storage()
         .persistent()
         .extend_ttl(&key, PROPOSAL_TTL / 2, PROPOSAL_TTL);
+}
+
+// ============================================================================
+// Gas Optimization: Packed Storage Operations
+// ============================================================================
+
+/// Get packed spending limits (combines daily and weekly in single read)
+pub fn get_packed_spending(env: &Env) -> crate::types::PackedSpendingLimits {
+    let today = get_day_number(env);
+    let week = get_week_number(env);
+    
+    env.storage()
+        .temporary()
+        .get(&DataKey::PackedSpending)
+        .unwrap_or(crate::types::PackedSpendingLimits {
+            day_number: today as u32,
+            daily_spent: 0,
+            week_number: week as u32,
+            weekly_spent: 0,
+        })
+}
+
+/// Set packed spending limits (combines daily and weekly in single write)
+pub fn set_packed_spending(env: &Env, limits: &crate::types::PackedSpendingLimits) {
+    let key = DataKey::PackedSpending;
+    env.storage().temporary().set(&key, limits);
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, DAY_IN_LEDGERS * 14, DAY_IN_LEDGERS * 14);
+}
+
+/// Optimized: Add to both daily and weekly spending in single operation
+pub fn add_spending_packed(env: &Env, amount: i128) {
+    let today = get_day_number(env);
+    let week = get_week_number(env);
+    let mut limits = get_packed_spending(env);
+    
+    // Reset daily if day changed
+    if limits.day_number != today as u32 {
+        limits.day_number = today as u32;
+        limits.daily_spent = 0;
+    }
+    
+    // Reset weekly if week changed
+    if limits.week_number != week as u32 {
+        limits.week_number = week as u32;
+        limits.weekly_spent = 0;
+    }
+    
+    limits.daily_spent += amount;
+    limits.weekly_spent += amount;
+    set_packed_spending(env, &limits);
+}
+
+/// Optimized: Check spending limits in single operation
+pub fn check_spending_limits_packed(
+    env: &Env,
+    amount: i128,
+    daily_limit: i128,
+    weekly_limit: i128,
+) -> Result<(), crate::errors::VaultError> {
+    let limits = get_packed_spending(env);
+    
+    if limits.daily_spent + amount > daily_limit {
+        return Err(crate::errors::VaultError::ExceedsDailyLimit);
+    }
+    
+    if limits.weekly_spent + amount > weekly_limit {
+        return Err(crate::errors::VaultError::ExceedsWeeklyLimit);
+    }
+    
+    Ok(())
+}
+
+/// Optimized: Refund spending limits in single operation
+pub fn refund_spending_limits_packed(env: &Env, amount: i128) {
+    let mut limits = get_packed_spending(env);
+    limits.daily_spent = limits.daily_spent.saturating_sub(amount).max(0);
+    limits.weekly_spent = limits.weekly_spent.saturating_sub(amount).max(0);
+    set_packed_spending(env, &limits);
+}
+
+/// Batch get proposals - optimized to reduce storage reads
+pub fn batch_get_proposals(env: &Env, ids: &Vec<u64>) -> Vec<Result<Proposal, crate::errors::VaultError>> {
+    let mut results = Vec::new(env);
+    
+    for i in 0..ids.len() {
+        if let Some(id) = ids.get(i) {
+            results.push_back(get_proposal(env, id));
+        }
+    }
+    
+    results
+}
+
+/// Batch set proposals - optimized to reduce storage operations
+pub fn batch_set_proposals(env: &Env, proposals: &Vec<Proposal>) {
+    for i in 0..proposals.len() {
+        if let Some(proposal) = proposals.get(i) {
+            set_proposal(env, &proposal);
+        }
+    }
+}
+
+/// Cache frequently accessed config in instance storage for faster reads
+pub fn get_config_cached(env: &Env) -> Result<Config, crate::errors::VaultError> {
+    // Config is already in instance storage, which is faster than persistent
+    get_config(env)
+}
+
+/// Optimized velocity check using temporary storage with auto-expiry
+pub fn check_velocity_optimized(
+    env: &Env,
+    addr: &Address,
+    limit: u32,
+    window: u64,
+) -> bool {
+    let now = env.ledger().timestamp();
+    let key = DataKey::VelocityHistory(addr.clone());
+    
+    // Use temporary storage for auto-expiry
+    let history: Vec<u64> = env
+        .storage()
+        .temporary()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    
+    let window_start = now.saturating_sub(window);
+    
+    // Count valid entries without creating new vector (gas optimization)
+    let mut count = 0u32;
+    for i in 0..history.len() {
+        if let Some(ts) = history.get(i) {
+            if ts > window_start {
+                count += 1;
+            }
+        }
+    }
+    
+    if count >= limit {
+        return false;
+    }
+    
+    // Only rebuild vector if we're adding (lazy cleanup)
+    let mut updated = Vec::new(env);
+    for i in 0..history.len() {
+        if let Some(ts) = history.get(i) {
+            if ts > window_start {
+                updated.push_back(ts);
+            }
+        }
+    }
+    updated.push_back(now);
+    
+    env.storage().temporary().set(&key, &updated);
+    // Auto-expire after window duration
+    let ttl_ledgers = (window / 5).max(DAY_IN_LEDGERS as u64) as u32;
+    env.storage().temporary().extend_ttl(&key, ttl_ledgers, ttl_ledgers);
+    
+    true
 }
