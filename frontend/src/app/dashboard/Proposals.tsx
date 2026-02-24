@@ -9,10 +9,17 @@ import ConfirmationModal from '../../components/modals/ConfirmationModal';
 import ProposalFilters, { type FilterState } from '../../components/proposals/ProposalFilters';
 import { useToast } from '../../hooks/useToast';
 import { useVaultContract } from '../../hooks/useVaultContract';
-import type { TokenBalance } from '../../components/TokenBalanceCard';
-import type { TokenInfo } from '../../constants/tokens';
-import { DEFAULT_TOKENS, formatTokenBalance } from '../../constants/tokens';
 import { useWallet } from '../../context/WalletContextProps';
+import { reportError } from '../../components/ErrorReporting';
+import { parseError } from '../../utils/errorParser';
+import type { TokenInfo } from '../../constants/tokens';
+import { DEFAULT_TOKENS } from '../../constants/tokens';
+
+interface TokenBalance {
+  token: TokenInfo;
+  balance: string;
+  isLoading: boolean;
+}
 
 const CopyButton = ({ text }: { text: string }) => (
   <button
@@ -54,8 +61,8 @@ export interface Proposal {
 
 const Proposals: React.FC = () => {
   const { notify } = useToast();
-  const { rejectProposal, getTokenBalances, addCustomToken } = useVaultContract();
-  useWallet();
+  const { rejectProposal, approveProposal, getTokenBalances } = useVaultContract();
+  const { address } = useWallet();
 
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -87,7 +94,7 @@ const Proposals: React.FC = () => {
     const fetchBalances = async () => {
       try {
         const balances = await getTokenBalances();
-        setTokenBalances(balances.map(b => ({ ...b, isLoading: false })));
+        setTokenBalances(balances.map((b: TokenBalance) => ({ ...b, isLoading: false })));
       } catch (error) {
         console.error('Failed to fetch token balances:', error);
         // Set default tokens with zero balances
@@ -144,6 +151,7 @@ const Proposals: React.FC = () => {
             status: 'Approved',
             approvals: 3,
             threshold: 3,
+            approvedBy: ['0x789...012', '0xaaa...bbb', '0xccc...ddd'],
             createdAt: new Date(Date.now() - 86400000).toISOString()
           },
           {
@@ -156,6 +164,7 @@ const Proposals: React.FC = () => {
             memo: 'Community Rewards Distribution',
             status: 'Executed',
             approvals: 3,
+            approvedBy: ['0x345...678', '0xaaa...bbb', '0xccc...ddd'],
             threshold: 3,
             createdAt: new Date(Date.now() - 172800000).toISOString()
           }
@@ -222,6 +231,8 @@ const Proposals: React.FC = () => {
       setProposals(prev => prev.map(p => p.id === rejectingId ? { ...p, status: 'Rejected' } : p));
       notify('proposal_rejected', `Proposal #${rejectingId} rejected`, 'success');
     } catch (err: unknown) {
+      const vaultErr = parseError(err);
+      reportError({ ...vaultErr, context: 'Proposals.handleReject' });
       const errorMessage = err instanceof Error ? err.message : 'Failed to reject';
       notify('proposal_rejected', errorMessage, 'error');
     } finally {
@@ -236,7 +247,7 @@ const Proposals: React.FC = () => {
       notify('proposal_rejected', 'Wallet not connected', 'error');
       return;
     }
-    
+
     setApprovingIds(prev => new Set(prev).add(proposalId));
     try {
       await approveProposal(Number(proposalId));
@@ -254,46 +265,24 @@ const Proposals: React.FC = () => {
         return p;
       }));
       notify('proposal_approved', `Proposal #${proposalId} approved successfully`, 'success');
-    } catch (err: any) {
-      notify('proposal_rejected', err.message || 'Failed to approve proposal', 'error');
+    } catch (err: unknown) {
+      const vaultErr = parseError(err);
+      reportError({ ...vaultErr, context: 'Proposals.handleApprove' });
+      const errorMessage = err instanceof Error ? err.message : 'Failed to approve proposal';
+      notify('proposal_rejected', errorMessage, 'error');
     } finally {
       setApprovingIds(prev => {
         const newSet = new Set(prev);
         newSet.delete(proposalId);
         return newSet;
       });
-  const handleTokenSelect = (token: TokenInfo) => {
-    setNewProposalForm(prev => ({ ...prev, token: token.address }));
-    setSelectedToken(token);
-  };
-
-  // Find the selected token balance
-  const selectedTokenBalance = useMemo(() => {
-    if (!selectedToken) return null;
-    return tokenBalances.find(tb => tb.token.address === selectedToken.address);
-  }, [tokenBalances, selectedToken]);
-
-  // Compute amount error
-  const amountError = useMemo(() => {
-    if (newProposalForm.amount && selectedTokenBalance) {
-      const amount = parseFloat(newProposalForm.amount);
-      const balance = parseFloat(selectedTokenBalance.balance);
-      
-      if (isNaN(amount)) {
-        return 'Please enter a valid amount';
-      } else if (amount <= 0) {
-        return 'Amount must be greater than 0';
-      } else if (amount > balance) {
-        return `Insufficient balance. Available: ${formatTokenBalance(balance, selectedTokenBalance.token.decimals)} ${selectedTokenBalance.token.symbol}`;
-      }
     }
-    return null;
-  }, [newProposalForm.amount, selectedTokenBalance]);
+  };
 
   // Initialize selected token when tokenBalances load
   useEffect(() => {
     if (!selectedToken && tokenBalances.length > 0) {
-      const xlmToken = tokenBalances.find(tb => tb.token.address === 'NATIVE');
+      const xlmToken = tokenBalances.find((tb: TokenBalance) => tb.token.address === 'NATIVE');
       if (xlmToken) {
         setSelectedToken(xlmToken.token);
       } else {
@@ -301,21 +290,6 @@ const Proposals: React.FC = () => {
       }
     }
   }, [selectedToken, tokenBalances]);
-
-  const handleAddCustomToken = async (address: string): Promise<TokenInfo | null> => {
-    try {
-      const tokenInfo = await addCustomToken(address);
-      if (tokenInfo) {
-        // Refresh token balances
-        const balances = await getTokenBalances();
-        setTokenBalances(balances.map(b => ({ ...b, isLoading: false })));
-      }
-      return tokenInfo;
-    } catch (error) {
-      console.error('Failed to add custom token:', error);
-      throw error;
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gray-900 p-6 text-white">
@@ -335,7 +309,7 @@ const Proposals: React.FC = () => {
               const isApproving = approvingIds.has(prop.id);
               const hasUserApproved = address ? prop.approvedBy.includes(address) : false;
               const progressPercent = (prop.approvals / prop.threshold) * 100;
-              
+
               return (
                 <div key={prop.id} onClick={() => setSelectedProposal(prop)} className="bg-gray-800/50 p-5 rounded-2xl border border-gray-700 hover:border-purple-500/50 cursor-pointer transition-all hover:scale-[1.01] group">
                   <div className="flex flex-col gap-4">
@@ -374,7 +348,7 @@ const Proposals: React.FC = () => {
                               )}
                             </div>
                             <div className="w-full bg-gray-700/30 rounded-full h-2 overflow-hidden">
-                              <div 
+                              <div
                                 className="bg-gradient-to-r from-purple-500 to-purple-600 h-full rounded-full transition-all duration-500"
                                 style={{ width: `${Math.min(progressPercent, 100)}%` }}
                               />
@@ -382,13 +356,12 @@ const Proposals: React.FC = () => {
                             {prop.approvedBy.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {prop.approvedBy.map((approver, idx) => (
-                                  <span 
-                                    key={idx} 
-                                    className={`text-xs px-2 py-1 rounded-full ${
-                                      approver === address 
-                                        ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' 
-                                        : 'bg-gray-700/50 text-gray-400'
-                                    }`}
+                                  <span
+                                    key={idx}
+                                    className={`text-xs px-2 py-1 rounded-full ${approver === address
+                                      ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                      : 'bg-gray-700/50 text-gray-400'
+                                      }`}
                                   >
                                     {approver.slice(0, 6)}...{approver.slice(-4)}
                                   </span>
@@ -398,7 +371,7 @@ const Proposals: React.FC = () => {
                           </div>
                           <div className="flex gap-2 w-full sm:w-auto">
                             {address && !hasUserApproved && (
-                              <button 
+                              <button
                                 onClick={(e) => handleApprove(prop.id, e)}
                                 disabled={isApproving}
                                 className="flex-1 sm:flex-initial bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
@@ -422,8 +395,8 @@ const Proposals: React.FC = () => {
                                 Approved
                               </div>
                             )}
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); setRejectingId(prop.id); setShowRejectModal(true); }} 
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setRejectingId(prop.id); setShowRejectModal(true); }}
                               className="flex-1 sm:flex-initial bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                             >
                               Reject
@@ -449,12 +422,8 @@ const Proposals: React.FC = () => {
           loading={loading}
           selectedTemplateName={null}
           formData={newProposalForm}
-          tokenBalances={tokenBalances}
-          selectedToken={selectedToken}
-          amountError={amountError}
-          onTokenSelect={handleTokenSelect}
-          onAddCustomToken={handleAddCustomToken}
           onFieldChange={(f, v) => setNewProposalForm(prev => ({ ...prev, [f]: v }))}
+          onAttachmentsChange={(attachments) => setNewProposalForm(prev => ({ ...prev, attachments }))}
           onSubmit={(e) => { e.preventDefault(); setShowNewProposalModal(false); }}
           onOpenTemplateSelector={() => { }}
           onSaveAsTemplate={() => { }}
