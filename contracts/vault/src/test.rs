@@ -33,6 +33,7 @@ fn default_init_config(
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(_env),
     }
 }
 
@@ -1390,6 +1391,7 @@ fn test_time_based_threshold_strategy() {
             reduced_threshold: 2,
             reduction_delay: 100,
         }),
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -1453,6 +1455,7 @@ fn test_condition_balance_above() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -1734,6 +1737,7 @@ fn test_condition_no_conditions() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -1793,6 +1797,7 @@ fn test_dex_config_setup() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
 
@@ -1849,6 +1854,7 @@ fn test_swap_proposal_creation() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &treasurer, &Role::Treasurer);
@@ -1911,6 +1917,7 @@ fn test_dex_not_enabled_error() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &treasurer, &Role::Treasurer);
@@ -1960,6 +1967,7 @@ fn test_batch_propose_multi_token() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &treasurer, &Role::Treasurer);
@@ -2033,6 +2041,7 @@ fn test_batch_propose_exceeds_max_size() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &treasurer, &Role::Treasurer);
@@ -2160,6 +2169,7 @@ fn test_quorum_blocks_approval_until_satisfied() {
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -2244,6 +2254,7 @@ fn test_abstentions_count_toward_quorum_but_not_threshold() {
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -2328,6 +2339,7 @@ fn test_get_quorum_status() {
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -2397,6 +2409,7 @@ fn test_update_quorum() {
             window: 3600,
         },
         threshold_strategy: ThresholdStrategy::Fixed,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
 
@@ -2448,6 +2461,7 @@ fn test_quorum_satisfied_by_approvals_alone() {
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
     client.set_role(&admin, &signer1, &Role::Treasurer);
@@ -2507,6 +2521,7 @@ fn test_initialize_rejects_quorum_too_high() {
         },
         threshold_strategy: ThresholdStrategy::Fixed,
         default_voting_deadline: 0,
+        veto_addresses: Vec::new(&env),
     };
 
     let result = client.try_initialize(&admin, &config);
@@ -2537,12 +2552,18 @@ fn test_veto_pending_proposal() {
     let config = InitConfig {
         signers,
         threshold: 1,
+        quorum: 0,
         spending_limit: 1000,
         daily_limit: 5000,
         weekly_limit: 10000,
         timelock_threshold: 5000,
         timelock_delay: 100,
+        velocity_limit: VelocityConfig {
+            limit: 100,
+            window: 3600,
+        },
         threshold_strategy: ThresholdStrategy::Fixed,
+        default_voting_deadline: 0,
         veto_addresses,
     };
     client.initialize(&admin, &config);
@@ -2557,6 +2578,7 @@ fn test_veto_pending_proposal() {
         &Priority::High,
         &Vec::new(&env),
         &ConditionLogic::And,
+        &0i128,
     );
 
     client.veto_proposal(&vetoer, &proposal_id);
@@ -2589,12 +2611,18 @@ fn test_veto_requires_veto_address() {
     let config = InitConfig {
         signers,
         threshold: 1,
+        quorum: 0,
         spending_limit: 1000,
         daily_limit: 5000,
         weekly_limit: 10000,
         timelock_threshold: 5000,
         timelock_delay: 100,
+        velocity_limit: VelocityConfig {
+            limit: 100,
+            window: 3600,
+        },
         threshold_strategy: ThresholdStrategy::Fixed,
+        default_voting_deadline: 0,
         veto_addresses: Vec::new(&env),
     };
     client.initialize(&admin, &config);
@@ -2609,6 +2637,7 @@ fn test_veto_requires_veto_address() {
         &Priority::Normal,
         &Vec::new(&env),
         &ConditionLogic::And,
+        &0i128,
     );
 
     let res = client.try_veto_proposal(&not_vetoer, &proposal_id);
@@ -2641,12 +2670,18 @@ fn test_veto_blocks_execution_of_approved_proposal() {
     let config = InitConfig {
         signers,
         threshold: 2,
+        quorum: 0,
         spending_limit: 1000,
         daily_limit: 5000,
         weekly_limit: 10000,
         timelock_threshold: 5000,
         timelock_delay: 100,
+        velocity_limit: VelocityConfig {
+            limit: 100,
+            window: 3600,
+        },
         threshold_strategy: ThresholdStrategy::Fixed,
+        default_voting_deadline: 0,
         veto_addresses,
     };
     client.initialize(&admin, &config);
@@ -2662,6 +2697,7 @@ fn test_veto_blocks_execution_of_approved_proposal() {
         &Priority::Critical,
         &Vec::new(&env),
         &ConditionLogic::And,
+        &0i128,
     );
 
     client.approve_proposal(&signer1, &proposal_id);
