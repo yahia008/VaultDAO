@@ -28,6 +28,24 @@ use crate::types::{
     Subscription, SubscriptionPayment, VaultMetrics, VelocityConfig,
 };
 
+/// Storage keys for batch transactions
+#[contracttype]
+#[derive(Clone)]
+pub enum BatchKey {
+    Transaction(u64),
+    Result(u64),
+    Rollback(u64),
+    Counter,
+}
+
+/// Storage keys for streaming payments
+#[contracttype]
+#[derive(Clone)]
+pub enum StreamKey {
+    Payment(u64),
+    Counter,
+}
+
 /// Storage key definitions
 #[contracttype]
 #[derive(Clone)]
@@ -122,14 +140,10 @@ pub enum DataKey {
     NextRecoveryId,
     /// Insurance pool accumulated slashed funds (Token Address) -> i128
     InsurancePool(Address),
-    /// Batch transaction by ID -> BatchTransaction
-    Batch(u64),
-    /// Batch execution result by ID -> BatchExecutionResult
-    BatchResult(u64),
-    /// Batch rollback state (operations to reverse) -> Vec<(Address, i128)>
-    BatchRollback(u64),
-    /// Next batch ID counter -> u64
-    BatchIdCounter,
+    /// Streaming payment related data -> StreamKey
+    Stream(StreamKey),
+    /// Batch transaction related data -> BatchKey
+    Batch(BatchKey),
 }
 
 /// TTL constants (in ledgers, ~5 seconds each)
@@ -348,6 +362,46 @@ pub fn get_recurring_payment(
     env.storage()
         .persistent()
         .get(&DataKey::Recurring(id))
+        .ok_or(VaultError::ProposalNotFound)
+}
+
+// ============================================================================
+// Streaming Payments
+// ============================================================================
+
+pub fn get_next_stream_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get::<DataKey, u64>(&DataKey::Stream(StreamKey::Counter))
+        .unwrap_or(1)
+}
+
+pub fn increment_stream_id(env: &Env) -> u64 {
+    let id = get_next_stream_id(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::Stream(StreamKey::Counter), &(id + 1));
+    extend_instance_ttl(env);
+    id
+}
+
+pub fn set_streaming_payment(env: &Env, stream: &crate::types::StreamingPayment) {
+    let key = DataKey::Stream(StreamKey::Payment(stream.id));
+    env.storage().persistent().set(&key, stream);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
+pub fn get_streaming_payment(
+    env: &Env,
+    id: u64,
+) -> Result<crate::types::StreamingPayment, VaultError> {
+    let key = DataKey::Stream(StreamKey::Payment(id));
+    env.storage()
+        .persistent()
+        .get(&key)
+        .flatten()
         .ok_or(VaultError::ProposalNotFound)
 }
 
@@ -1078,7 +1132,7 @@ pub fn add_recipient_escrow(env: &Env, recipient: &Address, escrow_id: u64) {
 pub fn get_next_batch_id(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get::<DataKey, u64>(&DataKey::BatchIdCounter)
+        .get::<DataKey, u64>(&DataKey::Batch(BatchKey::Counter))
         .unwrap_or(0)
 }
 
@@ -1087,13 +1141,13 @@ pub fn increment_batch_id(env: &Env) -> u64 {
     let next = current + 1;
     env.storage()
         .instance()
-        .set(&DataKey::BatchIdCounter, &next);
+        .set(&DataKey::Batch(BatchKey::Counter), &next);
     extend_instance_ttl(env);
     next
 }
 
 pub fn set_batch(env: &Env, batch: &crate::types::BatchTransaction) {
-    let key = DataKey::Batch(batch.id);
+    let key = DataKey::Batch(BatchKey::Transaction(batch.id));
     env.storage().persistent().set(&key, batch);
     env.storage()
         .persistent()
@@ -1101,7 +1155,7 @@ pub fn set_batch(env: &Env, batch: &crate::types::BatchTransaction) {
 }
 
 pub fn get_batch(env: &Env, batch_id: u64) -> Result<crate::types::BatchTransaction, VaultError> {
-    let key = DataKey::Batch(batch_id);
+    let key = DataKey::Batch(BatchKey::Transaction(batch_id));
     env.storage()
         .persistent()
         .get(&key)
@@ -1110,7 +1164,7 @@ pub fn get_batch(env: &Env, batch_id: u64) -> Result<crate::types::BatchTransact
 }
 
 pub fn set_batch_result(env: &Env, result: &crate::types::BatchExecutionResult) {
-    let key = DataKey::BatchResult(result.batch_id);
+    let key = DataKey::Batch(BatchKey::Result(result.batch_id));
     env.storage().persistent().set(&key, result);
     env.storage()
         .persistent()
@@ -1118,13 +1172,13 @@ pub fn set_batch_result(env: &Env, result: &crate::types::BatchExecutionResult) 
 }
 
 pub fn get_batch_result(env: &Env, batch_id: u64) -> Option<crate::types::BatchExecutionResult> {
-    let key = DataKey::BatchResult(batch_id);
+    let key = DataKey::Batch(BatchKey::Result(batch_id));
     env.storage().persistent().get(&key).flatten()
 }
 
 #[allow(dead_code)]
 pub fn get_rollback_state(env: &Env, batch_id: u64) -> Vec<(Address, i128)> {
-    let key = DataKey::BatchRollback(batch_id);
+    let key = DataKey::Batch(BatchKey::Rollback(batch_id));
     env.storage()
         .persistent()
         .get(&key)
@@ -1133,7 +1187,7 @@ pub fn get_rollback_state(env: &Env, batch_id: u64) -> Vec<(Address, i128)> {
 }
 
 pub fn set_rollback_state(env: &Env, batch_id: u64, state: &Vec<(Address, i128)>) {
-    let key = DataKey::BatchRollback(batch_id);
+    let key = DataKey::Batch(BatchKey::Rollback(batch_id));
     env.storage().persistent().set(&key, state);
     env.storage()
         .persistent()
