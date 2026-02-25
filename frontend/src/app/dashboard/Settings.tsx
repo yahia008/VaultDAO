@@ -122,6 +122,9 @@ const Settings: React.FC = () => {
     [vaultConfig],
   );
 
+  const isAdmin = useMemo(() => vaultConfig?.currentUserRole === 2, [vaultConfig]);
+  const isSigner = useMemo(() => vaultConfig?.isCurrentUserSigner ?? false, [vaultConfig]);
+
   const formatTimelockDelay = (delayLedgers: number): string => {
     if (!delayLedgers || delayLedgers < 1) return 'No delay';
     const totalSeconds = delayLedgers * 5;
