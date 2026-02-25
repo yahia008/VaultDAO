@@ -15,23 +15,25 @@ export default function VoiceToText({ value, onChange, placeholder, className = 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.lang = 'en-US';
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
 
-      recognitionRef.current.onresult = (event: any) => {
+      recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
         onChange(value ? `${value} ${transcript}` : transcript);
       };
 
-      recognitionRef.current.onend = () => {
+      recognition.onend = () => {
         setIsListening(false);
       };
 
-      recognitionRef.current.onerror = () => {
+      recognition.onerror = () => {
         setIsListening(false);
       };
+
+      recognitionRef.current = recognition;
     }
 
     return () => {
