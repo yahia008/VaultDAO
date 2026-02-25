@@ -6604,7 +6604,12 @@ fn test_estimate_execution_fee_includes_insurance_step() {
     let admin = Address::generate(&env);
     let treasurer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
+    
+    // Register a proper Stellar Asset Contract for the token
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token = sac.address();
+    let sac_admin_client = StellarAssetClient::new(&env, &token);
 
     let mut signers = Vec::new(&env);
     signers.push_back(admin.clone());
@@ -6622,6 +6627,9 @@ fn test_estimate_execution_fee_includes_insurance_step() {
             condition_cost: 10,
         },
     );
+
+    // Mint tokens to the treasurer so they can lock insurance
+    sac_admin_client.mint(&treasurer, &1000);
 
     let mut conditions = Vec::new(&env);
     conditions.push_back(Condition::DateAfter(200));
