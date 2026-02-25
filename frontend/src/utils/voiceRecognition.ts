@@ -56,9 +56,9 @@ class VoiceRecognitionService {
   start(onResult?: (transcript: string) => void, onError?: (error: string) => void) {
     if (!this.recognition || this.isListening) return;
 
-    this.recognition.onresult = (event) => {
+    this.recognition.onresult = (event: SpeechRecognitionEvent) => {
       const transcript = Array.from(event.results)
-        .map(result => result[0].transcript)
+        .map((result: SpeechRecognitionResult) => result[0].transcript)
         .join('')
         .toLowerCase()
         .trim();
@@ -75,7 +75,7 @@ class VoiceRecognitionService {
       this.processCommand(transcript);
     };
 
-    this.recognition.onerror = (event) => {
+    this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       onError?.(event.error);
     };
 
