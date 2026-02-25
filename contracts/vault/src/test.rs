@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::types::{
-    DexConfig, RetryConfig, SubscriptionStatus, SubscriptionTier, SwapProposal, TimeBasedThreshold,
+    DexConfig, SubscriptionStatus, SubscriptionTier, SwapProposal, TimeBasedThreshold,
     TransferDetails, VelocityConfig,
 };
 use crate::{InitConfig, VaultDAO, VaultDAOClient};
@@ -6317,102 +6317,8 @@ fn test_insurance_pool_withdrawal() {
     assert!(result.is_err());
 }
 
-// ============================================================================
-// Advanced Permissions Tests (Issue: feature/advanced-permissions)
-// ============================================================================
-
 #[test]
-fn test_permission_grant_and_check() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    // Admin grants CreateProposal permission to user
-    client.grant_permission(&admin, &user, &types::Permission::CreateProposal, &None);
-
-    // Check permission
-    let has_perm = client.has_permission(&user, &types::Permission::CreateProposal);
-    assert!(has_perm);
-
-    // Check non-granted permission
-    let has_other = client.has_permission(&user, &types::Permission::ManageSigners);
-    assert!(!has_other);
-}
-
-#[test]
-fn test_permission_revocation() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    // Grant and verify
-    client.grant_permission(&admin, &user, &types::Permission::CreateProposal, &None);
-    assert!(client.has_permission(&user, &types::Permission::CreateProposal));
-
-    // Revoke and verify
-    client.revoke_permission(&admin, &user, &types::Permission::CreateProposal);
-    assert!(!client.has_permission(&user, &types::Permission::CreateProposal));
-}
-
-#[test]
-fn test_permission_expiry() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    // Grant with expiry at ledger 100
-    let expires_at = Some(100);
-    client.grant_permission(
-        &admin,
-        &user,
-        &types::Permission::CreateProposal,
-        &expires_at,
-    );
-
-    // Should have permission before expiry
-    env.ledger().set_sequence_number(50);
-    assert!(client.has_permission(&user, &types::Permission::CreateProposal));
-
-    // Should not have permission after expiry
-    env.ledger().set_sequence_number(101);
-    assert!(!client.has_permission(&user, &types::Permission::CreateProposal));
-}
-
-#[test]
-fn test_permission_delegation() {
+fn test_estimate_execution_fee_breakdown_and_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -6421,183 +6327,175 @@ fn test_permission_delegation() {
 
     let admin = Address::generate(&env);
     let treasurer = Address::generate(&env);
-    let delegate = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-    signers.push_back(treasurer.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    client.set_role(&admin, &treasurer, &Role::Treasurer);
-
-    // Treasurer delegates CreateProposal to delegate (expires at ledger 200)
-    client.delegate_permission(
-        &treasurer,
-        &delegate,
-        &types::Permission::CreateProposal,
-        &200,
-    );
-
-    // Delegate should have permission before expiry
-    env.ledger().set_sequence_number(100);
-    assert!(client.has_permission(&delegate, &types::Permission::CreateProposal));
-
-    // Should not have permission after expiry
-    env.ledger().set_sequence_number(201);
-    assert!(!client.has_permission(&delegate, &types::Permission::CreateProposal));
-}
-
-#[test]
-fn test_permission_delegation_revocation() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let treasurer = Address::generate(&env);
-    let delegate = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-    signers.push_back(treasurer.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    client.set_role(&admin, &treasurer, &Role::Treasurer);
-
-    // Delegate permission
-    client.delegate_permission(
-        &treasurer,
-        &delegate,
-        &types::Permission::CreateProposal,
-        &200,
-    );
-    assert!(client.has_permission(&delegate, &types::Permission::CreateProposal));
-
-    // Revoke delegation
-    client.revoke_delegation(&treasurer, &delegate, &types::Permission::CreateProposal);
-    assert!(!client.has_permission(&delegate, &types::Permission::CreateProposal));
-}
-
-#[test]
-fn test_role_permission_inheritance() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let treasurer = Address::generate(&env);
-    let member = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-    signers.push_back(treasurer.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    client.set_role(&admin, &treasurer, &Role::Treasurer);
-
-    // Admin has all permissions
-    assert!(client.has_permission(&admin, &types::Permission::ManageRoles));
-    assert!(client.has_permission(&admin, &types::Permission::CreateProposal));
-    assert!(client.has_permission(&admin, &types::Permission::ManageSigners));
-
-    // Treasurer has specific permissions
-    assert!(client.has_permission(&treasurer, &types::Permission::CreateProposal));
-    assert!(client.has_permission(&treasurer, &types::Permission::ApproveProposal));
-    assert!(!client.has_permission(&treasurer, &types::Permission::ManageSigners));
-
-    // Member has limited permissions
-    assert!(client.has_permission(&member, &types::Permission::ViewMetrics));
-    assert!(!client.has_permission(&member, &types::Permission::CreateProposal));
-}
-
-#[test]
-fn test_permission_denied_on_unauthorized_action() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
+    let recipient = Address::generate(&env);
     let token = Address::generate(&env);
 
     let mut signers = Vec::new(&env);
     signers.push_back(admin.clone());
+    signers.push_back(treasurer.clone());
 
-    let config = default_init_config(&env, signers, 1);
+    let config = default_init_config(&env, signers, 2);
     client.initialize(&admin, &config);
+    client.set_role(&admin, &treasurer, &Role::Treasurer);
+    client.set_gas_config(
+        &admin,
+        &GasConfig {
+            enabled: true,
+            default_gas_limit: 10_000,
+            base_cost: 100,
+            condition_cost: 25,
+        },
+    );
 
-    // User without CreateProposal permission tries to create proposal
-    let result = client.try_propose_transfer(
-        &user,
-        &user,
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(Condition::DateAfter(100));
+    conditions.push_back(Condition::BalanceAbove(10));
+
+    let proposal_id = client.propose_transfer(
+        &treasurer,
+        &recipient,
         &token,
         &100,
-        &Symbol::new(&env, "test"),
+        &Symbol::new(&env, "fee"),
+        &Priority::Normal,
+        &conditions,
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    let estimate = client.estimate_execution_fee(&proposal_id);
+    assert_eq!(estimate.base_fee, 100);
+    assert_eq!(estimate.resource_fee, 75);
+    assert_eq!(estimate.total_fee, 175);
+    assert_eq!(estimate.operation_count, 3);
+
+    let stored = client
+        .get_execution_fee_estimate(&proposal_id)
+        .expect("stored estimate should exist");
+    assert_eq!(stored.total_fee, estimate.total_fee);
+}
+
+#[test]
+fn test_estimate_execution_fee_includes_insurance_step() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasurer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Register a proper Stellar Asset Contract for the token
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token = sac.address();
+    let sac_admin_client = StellarAssetClient::new(&env, &token);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(treasurer.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+    client.set_role(&admin, &treasurer, &Role::Treasurer);
+    client.set_gas_config(
+        &admin,
+        &GasConfig {
+            enabled: true,
+            default_gas_limit: 10_000,
+            base_cost: 50,
+            condition_cost: 10,
+        },
+    );
+
+    // Mint tokens to the treasurer so they can lock insurance
+    sac_admin_client.mint(&treasurer, &1000);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(Condition::DateAfter(200));
+
+    let proposal_id = client.propose_transfer(
+        &treasurer,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "ins_fee"),
+        &Priority::Normal,
+        &conditions,
+        &ConditionLogic::And,
+        &25i128,
+    );
+
+    let estimate = client.estimate_execution_fee(&proposal_id);
+    assert_eq!(estimate.operation_count, 3);
+    assert_eq!(estimate.base_fee, 50);
+    assert_eq!(estimate.resource_fee, 30);
+    assert_eq!(estimate.total_fee, 80);
+}
+
+#[test]
+fn test_estimate_execution_fee_refreshes_after_gas_config_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasurer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(treasurer.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+    client.set_role(&admin, &treasurer, &Role::Treasurer);
+
+    client.set_gas_config(
+        &admin,
+        &GasConfig {
+            enabled: true,
+            default_gas_limit: 10_000,
+            base_cost: 100,
+            condition_cost: 20,
+        },
+    );
+
+    let proposal_id = client.propose_transfer(
+        &treasurer,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "refresh"),
         &Priority::Normal,
         &Vec::new(&env),
         &ConditionLogic::And,
-        &0,
+        &0i128,
     );
 
-    assert_eq!(result.err(), Some(Ok(VaultError::PermissionDenied)));
-}
+    let initial = client.estimate_execution_fee(&proposal_id);
+    assert_eq!(initial.total_fee, 120);
 
-#[test]
-fn test_permission_already_granted_error() {
-    let env = Env::default();
-    env.mock_all_auths();
+    client.set_gas_config(
+        &admin,
+        &GasConfig {
+            enabled: true,
+            default_gas_limit: 10_000,
+            base_cost: 200,
+            condition_cost: 40,
+        },
+    );
 
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
+    let refreshed = client.estimate_execution_fee(&proposal_id);
+    assert_eq!(refreshed.total_fee, 240);
 
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    // Grant permission
-    client.grant_permission(&admin, &user, &types::Permission::CreateProposal, &None);
-
-    // Try to grant same permission again
-    let result =
-        client.try_grant_permission(&admin, &user, &types::Permission::CreateProposal, &None);
-    assert_eq!(result.err(), Some(Ok(VaultError::PermissionAlreadyGranted)));
-}
-
-#[test]
-fn test_permission_not_found_on_revoke() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(VaultDAO, ());
-    let client = VaultDAOClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    let mut signers = Vec::new(&env);
-    signers.push_back(admin.clone());
-
-    let config = default_init_config(&env, signers, 1);
-    client.initialize(&admin, &config);
-
-    // Try to revoke non-existent permission
-    let result = client.try_revoke_permission(&admin, &user, &types::Permission::CreateProposal);
-    assert_eq!(result.err(), Some(Ok(VaultError::PermissionNotFound)));
+    let stored = client
+        .get_execution_fee_estimate(&proposal_id)
+        .expect("stored estimate should be refreshed");
+    assert_eq!(stored.total_fee, refreshed.total_fee);
 }

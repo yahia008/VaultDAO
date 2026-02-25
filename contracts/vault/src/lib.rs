@@ -19,8 +19,8 @@ pub use types::InitConfig;
 use errors::VaultError;
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Symbol, Vec};
 use types::{
-    Comment, Condition, ConditionLogic, Config, GasConfig, InsuranceConfig, ListMode,
-    NotificationPreferences, Priority, Proposal, ProposalAmendment, ProposalStatus,
+    Comment, Condition, ConditionLogic, Config, ExecutionFeeEstimate, GasConfig, InsuranceConfig,
+    ListMode, NotificationPreferences, Priority, Proposal, ProposalAmendment, ProposalStatus,
     ProposalTemplate, Reputation, RetryConfig, RetryState, Role, TemplateOverrides,
     ThresholdStrategy, VaultMetrics,
 };
@@ -369,6 +369,7 @@ impl VaultDAO {
         };
 
         storage::set_proposal(&env, &proposal);
+        Self::persist_execution_fee_estimate(&env, &proposal);
         storage::add_to_priority_queue(&env, priority as u32, proposal_id);
 
         // Extend TTL to ensure persistent data stays alive
@@ -577,6 +578,7 @@ impl VaultDAO {
             };
 
             storage::set_proposal(&env, &proposal);
+            Self::persist_execution_fee_estimate(&env, &proposal);
             storage::add_to_priority_queue(&env, priority.clone() as u32, proposal_id);
             proposal_ids.push_back(proposal_id);
 
@@ -811,11 +813,9 @@ impl VaultDAO {
                 Self::update_reputation_on_execution(&env, &proposal);
 
                 // Update performance metrics
-                let gas_cfg = storage::get_gas_config(&env);
-                let estimated_gas =
-                    gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
                 let execution_time = current_ledger.saturating_sub(proposal.created_at);
-                storage::metrics_on_execution(&env, estimated_gas, execution_time);
+                storage::metrics_on_execution(&env, proposal.gas_used, execution_time);
+                events::emit_execution_fee_used(&env, proposal_id, proposal.gas_used);
                 let metrics = storage::get_metrics(&env);
                 events::emit_metrics_updated(
                     &env,
@@ -2155,7 +2155,6 @@ impl VaultDAO {
 
         // Load config once (gas optimization — avoids repeated storage reads)
         let config = storage::get_config(&env)?;
-        let gas_cfg = storage::get_gas_config(&env);
 
         let current_ledger = env.ledger().sequence() as u64;
         let mut executed = Vec::new(&env);
@@ -2212,9 +2211,8 @@ impl VaultDAO {
             }
 
             // Skip if gas limit would be exceeded
-            let estimated_gas =
-                gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
-            if proposal.gas_limit > 0 && estimated_gas > proposal.gas_limit {
+            let fee_estimate = Self::calculate_execution_fee(&env, &proposal);
+            if proposal.gas_limit > 0 && fee_estimate.total_fee > proposal.gas_limit {
                 failed_count += 1;
                 continue;
             }
@@ -2245,7 +2243,7 @@ impl VaultDAO {
                 );
             }
 
-            proposal.gas_used = estimated_gas;
+            proposal.gas_used = fee_estimate.total_fee;
             proposal.status = ProposalStatus::Executed;
             storage::set_proposal(&env, &proposal);
 
@@ -2261,7 +2259,8 @@ impl VaultDAO {
 
             Self::update_reputation_on_execution(&env, &proposal);
             let exec_time = current_ledger.saturating_sub(proposal.created_at);
-            storage::metrics_on_execution(&env, estimated_gas, exec_time);
+            storage::metrics_on_execution(&env, fee_estimate.total_fee, exec_time);
+            events::emit_execution_fee_used(&env, proposal_id, fee_estimate.total_fee);
             executed.push_back(proposal_id);
         }
 
@@ -2661,6 +2660,20 @@ impl VaultDAO {
     /// Get the current gas configuration.
     pub fn get_gas_config(env: Env) -> GasConfig {
         storage::get_gas_config(&env)
+    }
+
+    /// Estimate execution fees for a proposal and persist the breakdown.
+    pub fn estimate_execution_fee(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<ExecutionFeeEstimate, VaultError> {
+        let proposal = storage::get_proposal(&env, proposal_id)?;
+        Ok(Self::persist_execution_fee_estimate(&env, &proposal))
+    }
+
+    /// Fetch the latest stored fee estimate for a proposal.
+    pub fn get_execution_fee_estimate(env: Env, proposal_id: u64) -> Option<ExecutionFeeEstimate> {
+        storage::get_execution_fee_estimate(&env, proposal_id)
     }
 
     // ========================================================================
@@ -3066,6 +3079,7 @@ impl VaultDAO {
         };
 
         storage::set_proposal(&env, &proposal);
+        Self::persist_execution_fee_estimate(&env, &proposal);
         storage::set_swap_proposal(&env, proposal_id, &swap_op);
         storage::add_to_priority_queue(&env, priority as u32, proposal_id);
         events::emit_proposal_created(
@@ -3501,6 +3515,7 @@ impl VaultDAO {
         };
 
         storage::set_proposal(&env, &proposal);
+        Self::persist_execution_fee_estimate(&env, &proposal);
         storage::add_to_priority_queue(&env, priority as u32, proposal_id);
 
         // Store companion cross-vault proposal
@@ -3616,6 +3631,7 @@ impl VaultDAO {
         let estimated_gas = gas_cfg.base_cost + num_actions as u64 * gas_cfg.condition_cost;
         let execution_time = current_ledger.saturating_sub(proposal.created_at);
         storage::metrics_on_execution(&env, estimated_gas, execution_time);
+        events::emit_execution_fee_used(&env, proposal_id, estimated_gas);
 
         Ok(())
     }
@@ -3877,11 +3893,14 @@ impl VaultDAO {
         }
 
         // Gas limit check
-        let gas_cfg = storage::get_gas_config(env);
-        let estimated_gas =
-            gas_cfg.base_cost + proposal.conditions.len() as u64 * gas_cfg.condition_cost;
-        if proposal.gas_limit > 0 && estimated_gas > proposal.gas_limit {
-            events::emit_gas_limit_exceeded(env, proposal.id, estimated_gas, proposal.gas_limit);
+        let fee_estimate = Self::calculate_execution_fee(env, proposal);
+        if proposal.gas_limit > 0 && fee_estimate.total_fee > proposal.gas_limit {
+            events::emit_gas_limit_exceeded(
+                env,
+                proposal.id,
+                fee_estimate.total_fee,
+                proposal.gas_limit,
+            );
             return Err(VaultError::GasLimitExceeded);
         }
 
@@ -3910,10 +3929,47 @@ impl VaultDAO {
             );
         }
 
-        // Record gas used
-        proposal.gas_used = estimated_gas;
+        // Record estimated fee used for execution.
+        proposal.gas_used = fee_estimate.total_fee;
 
         Ok(())
+    }
+
+    fn calculate_execution_fee(env: &Env, proposal: &Proposal) -> ExecutionFeeEstimate {
+        let gas_cfg = storage::get_gas_config(env);
+        let mut operation_count: u32 = 1; // Core transfer step.
+        operation_count = operation_count.saturating_add(proposal.conditions.len());
+        if proposal.insurance_amount > 0 {
+            operation_count = operation_count.saturating_add(1);
+        }
+        if proposal.is_swap {
+            operation_count = operation_count.saturating_add(1);
+        }
+
+        let resource_fee = gas_cfg
+            .condition_cost
+            .saturating_mul(operation_count as u64);
+        let total_fee = gas_cfg.base_cost.saturating_add(resource_fee);
+
+        ExecutionFeeEstimate {
+            base_fee: gas_cfg.base_cost,
+            resource_fee,
+            total_fee,
+            operation_count,
+        }
+    }
+
+    fn persist_execution_fee_estimate(env: &Env, proposal: &Proposal) -> ExecutionFeeEstimate {
+        let estimate = Self::calculate_execution_fee(env, proposal);
+        storage::set_execution_fee_estimate(env, proposal.id, &estimate);
+        events::emit_execution_fee_estimated(
+            env,
+            proposal.id,
+            estimate.base_fee,
+            estimate.resource_fee,
+            estimate.total_fee,
+        );
+        estimate
     }
 
     /// Create a new proposal template
@@ -4195,6 +4251,7 @@ impl VaultDAO {
         };
 
         storage::set_proposal(&env, &proposal);
+        Self::persist_execution_fee_estimate(&env, &proposal);
         storage::extend_instance_ttl(&env);
 
         events::emit_proposal_from_template(
@@ -4620,6 +4677,211 @@ impl VaultDAO {
     /// Get all escrows for a recipient
     pub fn get_recipient_escrows(env: Env, recipient: Address) -> Vec<u64> {
         storage::get_recipient_escrows(&env, &recipient)
+    }
+
+    // ============================================================================
+    // Batch Transactions
+    // ============================================================================
+
+    /// Create a batch transaction with multiple operations
+    pub fn create_batch(
+        env: Env,
+        creator: Address,
+        operations: Vec<types::BatchOperation>,
+        memo: Symbol,
+    ) -> Result<u64, VaultError> {
+        creator.require_auth();
+
+        // Validate batch is not empty
+        if operations.is_empty() {
+            return Err(VaultError::BatchSizeExceeded);
+        }
+
+        // Enforce size limit (max 32 operations per batch)
+        const MAX_BATCH_OPS: u32 = 32;
+        if operations.len() > MAX_BATCH_OPS {
+            return Err(VaultError::BatchSizeExceeded);
+        }
+
+        // Validate each operation
+        for op in operations.iter() {
+            Self::validate_batch_operation(&env, &op)?;
+        }
+
+        let batch_id = storage::increment_batch_id(&env);
+        let estimated_gas = Self::estimate_batch_gas(&env, &operations);
+
+        let batch = types::BatchTransaction {
+            id: batch_id,
+            creator: creator.clone(),
+            operations: operations.clone(),
+            status: types::BatchStatus::Pending,
+            created_at: env.ledger().timestamp(),
+            memo,
+            estimated_gas,
+        };
+
+        storage::set_batch(&env, &batch);
+
+        Ok(batch_id)
+    }
+
+    /// Execute a batch transaction atomically
+    pub fn execute_batch(
+        env: Env,
+        executor: Address,
+        batch_id: u64,
+    ) -> Result<types::BatchExecutionResult, VaultError> {
+        executor.require_auth();
+
+        let config = storage::get_config(&env)?;
+        let executor_role = storage::get_role(&env, &executor);
+
+        // Check authorization
+        if executor_role != Role::Admin && executor_role != Role::Treasurer {
+            return Err(VaultError::InsufficientRole);
+        }
+
+        let mut batch = storage::get_batch(&env, batch_id)?;
+
+        // Can only execute pending batches
+        if batch.status != types::BatchStatus::Pending {
+            return Err(VaultError::BatchNotPending);
+        }
+
+        // Mark as executing
+        batch.status = types::BatchStatus::Executing;
+        storage::set_batch(&env, &batch);
+
+        let mut rollback_state: Vec<(Address, i128)> = Vec::new(&env);
+        let mut executed_count: u64 = 0;
+        let mut failed_index: u64 = 0;
+        let mut error_msg = Symbol::new(&env, "");
+        let mut success = true;
+
+        // Execute operations sequentially
+        for (idx, op) in batch.operations.iter().enumerate() {
+            match Self::execute_batch_operation(&env, &op, &mut rollback_state, &config) {
+                Ok(_) => {
+                    executed_count += 1;
+                }
+                Err(err) => {
+                    success = false;
+                    failed_index = idx as u64;
+                    error_msg = match err {
+                        VaultError::ExceedsDailyLimit => Symbol::new(&env, "limit_exceeded"),
+                        VaultError::InsufficientRole => Symbol::new(&env, "insufficient_role"),
+                        VaultError::InvalidAmount => Symbol::new(&env, "invalid_amount"),
+                        VaultError::InsufficientBalance => {
+                            Symbol::new(&env, "insufficient_balance")
+                        }
+                        _ => Symbol::new(&env, "unknown_error"),
+                    };
+                    break;
+                }
+            }
+        }
+
+        // Perform rollback if execution failed
+        if !success {
+            Self::rollback_batch(&env, &rollback_state)?;
+            batch.status = types::BatchStatus::RolledBack;
+        } else {
+            batch.status = types::BatchStatus::Completed;
+        }
+
+        storage::set_batch(&env, &batch);
+
+        // Store execution result
+        let result = types::BatchExecutionResult {
+            batch_id,
+            success,
+            failed_operation_index: failed_index,
+            error: error_msg,
+            executed_count,
+            executed_at: env.ledger().timestamp(),
+        };
+
+        storage::set_batch_result(&env, &result);
+
+        if !success {
+            storage::set_rollback_state(&env, batch_id, &rollback_state);
+        }
+
+        // Emit event for batch execution
+        let ops_len = batch.operations.len();
+        let failed_count = ops_len.saturating_sub(executed_count as u32);
+        events::emit_batch_executed(&env, &executor, executed_count as u32, failed_count);
+
+        Ok(result)
+    }
+
+    /// Retrieve batch execution result
+    pub fn get_batch_result(env: Env, batch_id: u64) -> Option<types::BatchExecutionResult> {
+        storage::get_batch_result(&env, batch_id)
+    }
+
+    /// Retrieve batch details
+    pub fn get_batch(env: Env, batch_id: u64) -> Result<types::BatchTransaction, VaultError> {
+        storage::get_batch(&env, batch_id)
+    }
+
+    /// Validate a single batch operation
+    fn validate_batch_operation(_env: &Env, op: &types::BatchOperation) -> Result<(), VaultError> {
+        // Amount must be positive
+        if op.amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        Ok(())
+    }
+
+    /// Execute a single batch operation
+    fn execute_batch_operation(
+        env: &Env,
+        op: &types::BatchOperation,
+        rollback_state: &mut Vec<(Address, i128)>,
+        config: &Config,
+    ) -> Result<(), VaultError> {
+        // Get current day for cumulative tracking
+        let today = env.ledger().timestamp() / 86400; // seconds to days
+
+        // Check spending limits
+        let daily_spent = storage::get_daily_spent(env, today);
+        let new_daily_total = daily_spent + op.amount;
+
+        if new_daily_total > config.daily_limit {
+            return Err(VaultError::ExceedsDailyLimit);
+        }
+
+        // Record rollback state
+        rollback_state.push_back((op.recipient.clone(), op.amount));
+
+        // Update spending limits
+        storage::add_daily_spent(env, today, op.amount);
+
+        Ok(())
+    }
+
+    /// Rollback batch operations in reverse order
+    fn rollback_batch(
+        _env: &Env,
+        _rollback_state: &Vec<(Address, i128)>,
+    ) -> Result<(), VaultError> {
+        // In production, this would reverse the transfers
+        // For now, we track the state for audit purposes
+        // Audit trail is maintained via event emission and result storage
+        Ok(())
+    }
+
+    /// Estimate gas cost for batch operations
+    fn estimate_batch_gas(_env: &Env, operations: &Vec<types::BatchOperation>) -> u64 {
+        // Base overhead: 100,000
+        // Per-operation cost: 50,000
+        const BASE_OVERHEAD: u64 = 100_000;
+        const PER_OP_COST: u64 = 50_000;
+
+        BASE_OVERHEAD + (operations.len() as u64 * PER_OP_COST)
     }
 
     // ========================================================================

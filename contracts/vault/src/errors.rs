@@ -96,9 +96,8 @@ pub enum VaultError {
     TemplateInactive = 211,
     TemplateValidationFailed = 212,
 
-    // Permission errors
-    PermissionDenied = 220,
-    PermissionExpired = 221,
-    PermissionAlreadyGranted = 222,
-    PermissionNotFound = 223,
+    // Batch transaction errors (consolidated)
+    BatchNotFound = 220,
+    BatchNotPending = 221,
+    BatchSizeExceeded = 222,
 }

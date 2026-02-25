@@ -22,10 +22,9 @@ use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 use crate::errors::VaultError;
 use crate::types::{
-    Comment, Config, DelegatedPermission, Escrow, GasConfig, InsuranceConfig, ListMode,
-    NotificationPreferences, PermissionGrant, Proposal, ProposalAmendment, ProposalTemplate,
-    RecoveryProposal, Reputation, RetryState, Role, Subscription, SubscriptionPayment,
-    VaultMetrics, VelocityConfig,
+    Comment, Config, DexConfig, Escrow, ExecutionFeeEstimate, GasConfig, InsuranceConfig, ListMode,
+    NotificationPreferences, Proposal, ProposalAmendment, ProposalTemplate, RecoveryProposal,
+    Reputation, RetryState, Role, Subscription, SubscriptionPayment, VaultMetrics, VelocityConfig,
 };
 
 /// Storage key definitions
@@ -88,6 +87,8 @@ pub enum DataKey {
     SwapResult(u64),
     /// Gas execution limit configuration -> GasConfig
     GasConfig,
+    /// Cached fee estimate for proposal execution -> ExecutionFeeEstimate
+    ExecutionFeeEstimate(u64),
     /// Vault-wide performance metrics -> VaultMetrics
     Metrics,
     /// Proposal template by ID -> ProposalTemplate
@@ -120,10 +121,14 @@ pub enum DataKey {
     NextRecoveryId,
     /// Insurance pool accumulated slashed funds (Token Address) -> i128
     InsurancePool(Address),
-    /// Permission grants for address -> Vec<PermissionGrant>
-    Permissions(Address),
-    /// Delegated permissions (delegatee, delegator, permission) -> DelegatedPermission
-    DelegatedPermission(Address, Address, u32),
+    /// Batch transaction by ID -> BatchTransaction
+    Batch(u64),
+    /// Batch execution result by ID -> BatchExecutionResult
+    BatchResult(u64),
+    /// Batch rollback state (operations to reverse) -> Vec<(Address, i128)>
+    BatchRollback(u64),
+    /// Next batch ID counter -> u64
+    BatchIdCounter,
 }
 
 /// TTL constants (in ledgers, ~5 seconds each)
@@ -723,7 +728,7 @@ pub fn set_notification_prefs(env: &Env, addr: &Address, prefs: &NotificationPre
 // DEX/AMM Integration (Issue: feature/amm-integration)
 // ============================================================================
 
-use crate::types::{DexConfig, SwapProposal, SwapResult};
+use crate::types::{SwapProposal, SwapResult};
 
 pub fn set_dex_config(env: &Env, config: &DexConfig) {
     env.storage().instance().set(&DataKey::DexConfig, config);
@@ -774,6 +779,20 @@ pub fn get_gas_config(env: &Env) -> GasConfig {
 
 pub fn set_gas_config(env: &Env, config: &GasConfig) {
     env.storage().instance().set(&DataKey::GasConfig, config);
+}
+
+pub fn get_execution_fee_estimate(env: &Env, proposal_id: u64) -> Option<ExecutionFeeEstimate> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ExecutionFeeEstimate(proposal_id))
+}
+
+pub fn set_execution_fee_estimate(env: &Env, proposal_id: u64, estimate: &ExecutionFeeEstimate) {
+    let key = DataKey::ExecutionFeeEstimate(proposal_id);
+    env.storage().persistent().set(&key, estimate);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PROPOSAL_TTL / 2, PROPOSAL_TTL);
 }
 
 // ============================================================================
@@ -1050,6 +1069,76 @@ pub fn add_recipient_escrow(env: &Env, recipient: &Address, escrow_id: u64) {
         .persistent()
         .extend_ttl(&key, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 }
+
+// ============================================================================
+// Batch Transactions
+// ============================================================================
+
+pub fn get_next_batch_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get::<DataKey, u64>(&DataKey::BatchIdCounter)
+        .unwrap_or(0)
+}
+
+pub fn increment_batch_id(env: &Env) -> u64 {
+    let current = get_next_batch_id(env);
+    let next = current + 1;
+    env.storage()
+        .instance()
+        .set(&DataKey::BatchIdCounter, &next);
+    extend_instance_ttl(env);
+    next
+}
+
+pub fn set_batch(env: &Env, batch: &crate::types::BatchTransaction) {
+    let key = DataKey::Batch(batch.id);
+    env.storage().persistent().set(&key, batch);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
+pub fn get_batch(env: &Env, batch_id: u64) -> Result<crate::types::BatchTransaction, VaultError> {
+    let key = DataKey::Batch(batch_id);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .flatten()
+        .ok_or(VaultError::BatchNotFound)
+}
+
+pub fn set_batch_result(env: &Env, result: &crate::types::BatchExecutionResult) {
+    let key = DataKey::BatchResult(result.batch_id);
+    env.storage().persistent().set(&key, result);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
+pub fn get_batch_result(env: &Env, batch_id: u64) -> Option<crate::types::BatchExecutionResult> {
+    let key = DataKey::BatchResult(batch_id);
+    env.storage().persistent().get(&key).flatten()
+}
+
+#[allow(dead_code)]
+pub fn get_rollback_state(env: &Env, batch_id: u64) -> Vec<(Address, i128)> {
+    let key = DataKey::BatchRollback(batch_id);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .flatten()
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_rollback_state(env: &Env, batch_id: u64, state: &Vec<(Address, i128)>) {
+    let key = DataKey::BatchRollback(batch_id);
+    env.storage().persistent().set(&key, state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
 // ============================================================================
 // Wallet Recovery (Issue: feature/wallet-recovery)
 // ============================================================================
