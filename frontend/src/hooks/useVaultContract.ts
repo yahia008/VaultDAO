@@ -509,6 +509,114 @@ export const useVaultContract = () => {
         }
     };
 
+    const addSigner = async (signerAddress: string) => {
+        if (!isConnected || !address) throw new Error("Wallet not connected");
+        setLoading(true);
+        try {
+            const account = await server.getAccount(address);
+            const tx = new TransactionBuilder(account, { fee: "100" })
+                .setNetworkPassphrase(NETWORK_PASSPHRASE)
+                .setTimeout(30)
+                .addOperation(Operation.invokeHostFunction({
+                    func: xdr.HostFunction.hostFunctionTypeInvokeContract(
+                        new xdr.InvokeContractArgs({
+                            contractAddress: Address.fromString(CONTRACT_ID).toScAddress(),
+                            functionName: "add_signer",
+                            args: [
+                                new Address(address).toScVal(),
+                                new Address(signerAddress).toScVal(),
+                            ],
+                        })
+                    ),
+                    auth: [],
+                }))
+                .build();
+
+            const simulation = await server.simulateTransaction(tx);
+            if (SorobanRpc.Api.isSimulationError(simulation)) throw new Error(`Simulation Failed: ${simulation.error}`);
+            const preparedTx = SorobanRpc.assembleTransaction(tx, simulation).build();
+            const signedXdr = await signTransaction(preparedTx.toXDR(), { network: "TESTNET" });
+            const response = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr as string, NETWORK_PASSPHRASE));
+            return response.hash;
+        } catch (e: unknown) {
+            throw parseError(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const removeSigner = async (signerAddress: string) => {
+        if (!isConnected || !address) throw new Error("Wallet not connected");
+        setLoading(true);
+        try {
+            const account = await server.getAccount(address);
+            const tx = new TransactionBuilder(account, { fee: "100" })
+                .setNetworkPassphrase(NETWORK_PASSPHRASE)
+                .setTimeout(30)
+                .addOperation(Operation.invokeHostFunction({
+                    func: xdr.HostFunction.hostFunctionTypeInvokeContract(
+                        new xdr.InvokeContractArgs({
+                            contractAddress: Address.fromString(CONTRACT_ID).toScAddress(),
+                            functionName: "remove_signer",
+                            args: [
+                                new Address(address).toScVal(),
+                                new Address(signerAddress).toScVal(),
+                            ],
+                        })
+                    ),
+                    auth: [],
+                }))
+                .build();
+
+            const simulation = await server.simulateTransaction(tx);
+            if (SorobanRpc.Api.isSimulationError(simulation)) throw new Error(`Simulation Failed: ${simulation.error}`);
+            const preparedTx = SorobanRpc.assembleTransaction(tx, simulation).build();
+            const signedXdr = await signTransaction(preparedTx.toXDR(), { network: "TESTNET" });
+            const response = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr as string, NETWORK_PASSPHRASE));
+            return response.hash;
+        } catch (e: unknown) {
+            throw parseError(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const updateThreshold = async (newThreshold: number) => {
+        if (!isConnected || !address) throw new Error("Wallet not connected");
+        setLoading(true);
+        try {
+            const account = await server.getAccount(address);
+            const tx = new TransactionBuilder(account, { fee: "100" })
+                .setNetworkPassphrase(NETWORK_PASSPHRASE)
+                .setTimeout(30)
+                .addOperation(Operation.invokeHostFunction({
+                    func: xdr.HostFunction.hostFunctionTypeInvokeContract(
+                        new xdr.InvokeContractArgs({
+                            contractAddress: Address.fromString(CONTRACT_ID).toScAddress(),
+                            functionName: "update_threshold",
+                            args: [
+                                new Address(address).toScVal(),
+                                nativeToScVal(BigInt(newThreshold), { type: "u32" }),
+                            ],
+                        })
+                    ),
+                    auth: [],
+                }))
+                .build();
+
+            const simulation = await server.simulateTransaction(tx);
+            if (SorobanRpc.Api.isSimulationError(simulation)) throw new Error(`Simulation Failed: ${simulation.error}`);
+            const preparedTx = SorobanRpc.assembleTransaction(tx, simulation).build();
+            const signedXdr = await signTransaction(preparedTx.toXDR(), { network: "TESTNET" });
+            const response = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr as string, NETWORK_PASSPHRASE));
+            return response.hash;
+        } catch (e: unknown) {
+            throw parseError(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const getVaultEvents = async (
         cursor?: string,
         limit: number = EVENTS_PAGE_SIZE
@@ -811,6 +919,9 @@ export const useVaultContract = () => {
         approveProposal,
         rejectProposal,
         executeProposal,
+        addSigner,
+        removeSigner,
+        updateThreshold,
         getDashboardStats,
         getVaultEvents,
         loading,

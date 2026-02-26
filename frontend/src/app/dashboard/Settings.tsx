@@ -23,6 +23,7 @@ import RoleManagement from '../../components/RoleManagement';
 import EmergencyControls from '../../components/EmergencyControls';
 import WalletComparison from '../../components/WalletComparison';
 import CopyButton from '../../components/CopyButton';
+import AdminPanel from '../../components/AdminPanel';
 import { useVaultContract } from '../../hooks/useVaultContract';
 import { useWallet } from '../../hooks/useWallet';
 import { formatTokenAmount, truncateAddress } from '../../utils/formatters';
@@ -79,6 +80,7 @@ const Settings: React.FC = () => {
   const { address } = useWallet();
   const [history, setHistory] = useState<ExportHistoryItem[]>(() => getExportHistory());
   const [showRecipientLists, setShowRecipientLists] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [vaultConfig, setVaultConfig] = useState<Awaited<ReturnType<typeof getVaultConfig>> | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -377,11 +379,29 @@ const Settings: React.FC = () => {
         {showRecipientLists && <RecipientListManagement />}
       </div>
 
-      <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
-        <p className="text-gray-400">
-          Configuration editing is not enabled yet. Admin updates will be added in a future release.
-        </p>
-      </div>
+      {isAdmin ? (
+        <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <h3 className="text-lg font-semibold">Admin Panel</h3>
+              <p className="text-gray-400 text-sm mt-1">
+                Manage signer membership and approval threshold with confirmation safeguards.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowAdminPanel((prev) => !prev)}
+              className="min-h-[44px] px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm"
+            >
+              {showAdminPanel ? 'Hide Admin Panel' : 'Open Admin Panel'}
+            </button>
+          </div>
+
+          {showAdminPanel ? (
+            <AdminPanel vaultConfig={vaultConfig} onConfigUpdated={loadVaultConfig} />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 };
