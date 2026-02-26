@@ -11,6 +11,7 @@ mod errors;
 mod events;
 mod storage;
 mod test;
+mod test_hooks;
 mod token;
 mod types;
 
@@ -112,6 +113,8 @@ impl VaultDAO {
             timelock_delay: config.timelock_delay,
             velocity_limit: config.velocity_limit,
             threshold_strategy: config.threshold_strategy,
+            pre_execution_hooks: config.pre_execution_hooks,
+            post_execution_hooks: config.post_execution_hooks,
             default_voting_deadline: config.default_voting_deadline,
             retry_config: config.retry_config,
             recovery_config: config.recovery_config,
@@ -853,21 +856,22 @@ impl VaultDAO {
         }
     }
 
-    /// Explicitly retry a previously failed proposal execution.
-    ///
-    /// This is used when a proposal execution failed with a retryable error
-    /// and a retry was automatically scheduled. The caller can invoke this
-    /// after the backoff period has elapsed.
-    pub fn retry_execution(
-        env: Env,
-        executor: Address,
-        proposal_id: u64,
-    ) -> Result<(), VaultError> {
-        executor.require_auth();
-
+        // Execute pre-execution hooks
         let config = storage::get_config(&env)?;
-        if !config.retry_config.enabled {
-            return Err(VaultError::RetryError);
+        for i in 0..config.pre_execution_hooks.len() {
+            if let Some(hook) = config.pre_execution_hooks.get(i) {
+                Self::call_hook(&env, &hook, proposal_id, true);
+            }
+        }
+
+        // Execute transfer
+        token::transfer(&env, &proposal.token, &proposal.recipient, proposal.amount);
+
+        // Execute post-execution hooks
+        for i in 0..config.post_execution_hooks.len() {
+            if let Some(hook) = config.post_execution_hooks.get(i) {
+                Self::call_hook(&env, &hook, proposal_id, false);
+            }
         }
 
         let retry_state = storage::get_retry_state(&env, proposal_id).unwrap_or(RetryState {
@@ -3293,9 +3297,11 @@ impl VaultDAO {
     }
 
     // ========================================================================
-    // DEX/AMM Integration (Issue: feature/amm-integration)
+    // Execution Hooks
     // ========================================================================
 
+    /// Register a pre-execution hook
+    pub fn register_pre_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
     /// Configure DEX settings for automated trading
     pub fn set_dex_config(
         env: Env,
@@ -3303,8 +3309,15 @@ impl VaultDAO {
         dex_config: DexConfig,
     ) -> Result<(), VaultError> {
         admin.require_auth();
+
         let role = storage::get_role(&env, &admin);
         if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        if config.pre_execution_hooks.contains(&hook) {
+            return Err(VaultError::SignerAlreadyExists);
             return Err(VaultError::InsufficientRole);
         }
 
@@ -3353,18 +3366,13 @@ impl VaultDAO {
             return Err(VaultError::DexNotEnabled);
         }
 
-        // Create proposal
-        let proposal_id = storage::increment_proposal_id(&env);
-        let current_ledger = env.ledger().sequence();
-        let unlock_ledger = current_ledger + config.timelock_delay as u32;
+        config.pre_execution_hooks.push_back(hook.clone());
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
 
-        let gas_cfg = storage::get_gas_config(&env);
-        let proposal_gas_limit = if gas_cfg.enabled {
-            gas_cfg.default_gas_limit
-        } else {
-            0
-        };
+        events::emit_hook_registered(&env, &hook, true);
 
+        Ok(())
         let proposal = Proposal {
             id: proposal_id,
             proposer: proposer.clone(),
@@ -3416,23 +3424,24 @@ impl VaultDAO {
         Ok(proposal_id)
     }
 
-    /// Execute swap with slippage protection
-    pub fn execute_swap(env: Env, executor: Address, proposal_id: u64) -> Result<(), VaultError> {
-        executor.require_auth();
-        let mut proposal = storage::get_proposal(&env, proposal_id)?;
-        let config = storage::get_config(&env)?;
+    /// Register a post-execution hook
+    pub fn register_post_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
 
-        // Validate proposal status
-        if proposal.status != ProposalStatus::Approved {
-            return Err(VaultError::ProposalNotApproved);
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
         }
         Self::ensure_vote_requirements_satisfied(&config, &proposal)?;
 
-        // Check timelock
-        if env.ledger().sequence() < proposal.unlock_ledger as u32 {
-            return Err(VaultError::TimelockNotExpired);
+        let mut config = storage::get_config(&env)?;
+        if config.post_execution_hooks.contains(&hook) {
+            return Err(VaultError::SignerAlreadyExists);
         }
 
+        config.post_execution_hooks.push_back(hook.clone());
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
         Self::ensure_dependencies_executable(&env, &proposal)?;
 
         // Get swap operation
@@ -3490,24 +3499,14 @@ impl VaultDAO {
             }
         };
 
-        // Store result and update proposal
-        storage::set_swap_result(&env, proposal_id, &result);
-        proposal.status = ProposalStatus::Executed;
-        storage::set_proposal(&env, &proposal);
+        events::emit_hook_registered(&env, &hook, false);
 
-        events::emit_proposal_executed(
-            &env,
-            proposal_id,
-            &executor,
-            &proposal.recipient,
-            &proposal.token,
-            0,
-            env.ledger().sequence() as u64,
-        );
-        Self::update_reputation_on_execution(&env, &proposal);
         Ok(())
     }
 
+    /// Remove a pre-execution hook
+    pub fn remove_pre_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
     /// Internal: Execute token swap with slippage protection
     fn execute_token_swap(
         env: &Env,
@@ -3593,12 +3592,33 @@ impl VaultDAO {
         let token_a_out = amount / 2;
         let token_b_out = amount / 2;
 
-        if token_a_out < min_token_a || token_b_out < min_token_b {
-            return Err(VaultError::DexOperationFailed);
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
         }
 
-        events::emit_liquidity_removed(env, 0, dex, amount);
+        let mut config = storage::get_config(&env)?;
+        let mut found_idx: Option<u32> = None;
+        for i in 0..config.pre_execution_hooks.len() {
+            if config.pre_execution_hooks.get(i).unwrap() == hook {
+                found_idx = Some(i);
+                break;
+            }
+        }
 
+        let idx = found_idx.ok_or(VaultError::SignerNotFound)?;
+        config.pre_execution_hooks.remove(idx);
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        events::emit_hook_removed(&env, &hook, true);
+
+        Ok(())
+    }
+
+    /// Remove a post-execution hook
+    pub fn remove_post_hook(env: Env, admin: Address, hook: Address) -> Result<(), VaultError> {
+        admin.require_auth();
         Ok(SwapResult {
             amount_in: amount,
             amount_out: token_a_out + token_b_out,
@@ -3664,31 +3684,18 @@ impl VaultDAO {
         })
     }
 
-    /// Calculate expected swap output (constant product formula)
-    fn calculate_swap_output(
-        _env: &Env,
-        _dex: &Address,
-        _token_in: &Address,
-        _token_out: &Address,
-        amount_in: i128,
-    ) -> Result<i128, VaultError> {
-        // Get pool reserves (simplified - would query DEX contract)
-        let reserve_in = 1_000_000i128;
-        let reserve_out = 1_000_000i128;
-
-        // Constant product formula: (x + dx) * (y - dy) = x * y
-        // dy = y * dx / (x + dx)
-        let amount_in_with_fee = amount_in * 997 / 1000; // 0.3% fee
-        let numerator = amount_in_with_fee * reserve_out;
-        let denominator = reserve_in + amount_in_with_fee;
-
-        if denominator == 0 {
-            return Err(VaultError::DexOperationFailed);
+        let role = storage::get_role(&env, &admin);
+        if role != Role::Admin {
+            return Err(VaultError::Unauthorized);
         }
 
-        Ok(numerator / denominator)
-    }
-
+        let mut config = storage::get_config(&env)?;
+        let mut found_idx: Option<u32> = None;
+        for i in 0..config.post_execution_hooks.len() {
+            if config.post_execution_hooks.get(i).unwrap() == hook {
+                found_idx = Some(i);
+                break;
+            }
     /// Calculate price impact in basis points
     fn calculate_price_impact(
         amount_in: i128,
@@ -3699,17 +3706,25 @@ impl VaultDAO {
             return Err(VaultError::InvalidAmount);
         }
 
-        // Price impact = |1 - (amount_out / amount_in)| * 10000
-        let ratio = (amount_out * 10000) / amount_in;
-        let impact = if ratio > 10000 {
-            (ratio - 10000) as u32
-        } else {
-            (10000 - ratio) as u32
-        };
+        let idx = found_idx.ok_or(VaultError::SignerNotFound)?;
+        config.post_execution_hooks.remove(idx);
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
 
-        Ok(impact)
+        events::emit_hook_removed(&env, &hook, false);
+
+        Ok(())
     }
 
+    /// Internal helper to call a hook contract
+    fn call_hook(env: &Env, hook: &Address, proposal_id: u64, is_pre: bool) {
+        let _ = env.invoke_contract::<()>(
+            hook,
+            &Symbol::new(env, if is_pre { "pre_execute" } else { "post_execute" }),
+            (proposal_id,).into_val(env),
+        );
+        
+        events::emit_hook_executed(env, hook, proposal_id, is_pre);
     /// Get swap result for a proposal
     pub fn get_swap_result(env: Env, proposal_id: u64) -> Option<SwapResult> {
         storage::get_swap_result(&env, proposal_id)
