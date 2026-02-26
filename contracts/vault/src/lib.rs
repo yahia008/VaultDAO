@@ -2381,9 +2381,10 @@ impl VaultDAO {
                 continue;
             }
 
-            // Skip if insufficient balance (check both proposal amount and insurance)
+            // Skip if insufficient balance (check proposal amount + stake to refund)
             let balance = token::balance(&env, &proposal.token);
-            if balance < proposal.amount {
+            let required_balance = proposal.amount + proposal.stake_amount;
+            if balance < required_balance {
                 failed_count += 1;
                 continue;
             }
@@ -4284,9 +4285,9 @@ impl VaultDAO {
             proposal.amount,
         )?;
 
-        // Check vault balance (account for insurance amount and fee)
+        // Check vault balance (account for insurance amount, stake amount, and fee)
         let balance = token::balance(env, &proposal.token);
-        let total_required = proposal.amount + proposal.insurance_amount + fee_amount;
+        let total_required = proposal.amount + proposal.insurance_amount + proposal.stake_amount + fee_amount;
         if balance < total_required {
             return Err(VaultError::InsufficientBalance);
         }
@@ -4308,6 +4309,32 @@ impl VaultDAO {
                 &proposal.proposer,
                 proposal.insurance_amount,
             );
+        }
+
+        // Refund stake on successful execution
+        if proposal.stake_amount > 0 {
+            if let Some(mut stake_record) = storage::get_stake_record(env, proposal.id) {
+                if !stake_record.refunded && !stake_record.slashed {
+                    token::transfer(
+                        env,
+                        &proposal.token,
+                        &proposal.proposer,
+                        proposal.stake_amount,
+                    );
+                    
+                    let current_ledger = env.ledger().sequence() as u64;
+                    stake_record.refunded = true;
+                    stake_record.released_at = current_ledger;
+                    storage::set_stake_record(env, &stake_record);
+                    
+                    events::emit_stake_refunded(
+                        env,
+                        proposal.id,
+                        &proposal.proposer,
+                        proposal.stake_amount,
+                    );
+                }
+            }
         }
 
         // Record gas used
