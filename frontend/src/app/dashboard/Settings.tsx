@@ -80,6 +80,7 @@ const Settings: React.FC = () => {
   const { address } = useWallet();
   const [history, setHistory] = useState<ExportHistoryItem[]>(() => getExportHistory());
   const [showRecipientLists, setShowRecipientLists] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [vaultConfig, setVaultConfig] = useState<Awaited<ReturnType<typeof getVaultConfig>> | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
