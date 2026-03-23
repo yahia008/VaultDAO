@@ -1305,6 +1305,63 @@ impl VaultDAO {
         Ok(())
     }
 
+    /// Update the vault spending limits.
+    ///
+    /// Allows an admin to update the per-proposal, daily, and weekly spending caps
+    /// in a single atomic call. All three values must be positive and internally
+    /// consistent (`spending_limit <= daily_limit <= weekly_limit`).
+    ///
+    /// # Arguments
+    /// * `admin`         - Caller; must hold the `Admin` role and authorize.
+    /// * `spending_limit` - Maximum amount per individual proposal (in stroops).
+    /// * `daily_limit`   - Maximum aggregate spending per calendar day (in stroops).
+    /// * `weekly_limit`  - Maximum aggregate spending per calendar week (in stroops).
+    ///
+    /// # Errors
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::Unauthorized`]   if the caller is not an Admin.
+    /// - [`VaultError::InvalidAmount`]  if any value is non-positive or the hierarchy
+    ///   `spending_limit <= daily_limit <= weekly_limit` is violated.
+    pub fn update_limits(
+        env: Env,
+        admin: Address,
+        spending_limit: i128,
+        daily_limit: i128,
+        weekly_limit: i128,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        // Admin-only
+        if storage::get_role(&env, &admin) != Role::Admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        // All values must be positive
+        if spending_limit <= 0 || daily_limit <= 0 || weekly_limit <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        // Enforce hierarchy: per-proposal <= daily <= weekly
+        if spending_limit > daily_limit || daily_limit > weekly_limit {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let mut config = storage::get_config(&env)?;
+        config.spending_limit = spending_limit;
+        config.daily_limit = daily_limit;
+        config.weekly_limit = weekly_limit;
+        storage::set_config(&env, &config);
+        storage::extend_instance_ttl(&env);
+
+        // Audit trail
+        storage::create_audit_entry(&env, AuditAction::UpdateLimits, &admin, 0);
+
+        // Event
+        events::emit_config_updated(&env, &admin);
+
+        Ok(())
+    }
+
     /// Update the quorum requirement.
     ///
     /// Quorum is the minimum number of total votes (approvals + abstentions) that must

@@ -7557,3 +7557,127 @@ fn test_set_role_not_initialized() {
     let result = client.try_set_role(&admin, &user, &Role::Treasurer);
     assert_eq!(result, Err(Ok(VaultError::NotInitialized)));
 }
+
+// ============================================================================
+// update_limits tests (feature/public-update-limits-endpoint)
+// ============================================================================
+
+/// Admin can update all three spending limits successfully.
+#[test]
+fn test_update_limits_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+
+    let mut signers = soroban_sdk::Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &default_init_config(&env, signers, 1));
+
+    // Confirm defaults from default_init_config
+    let cfg_before = client.get_config();
+    assert_eq!(cfg_before.spending_limit, 1000);
+    assert_eq!(cfg_before.daily_limit, 5000);
+    assert_eq!(cfg_before.weekly_limit, 10000);
+
+    // Update to new values
+    client.update_limits(&admin, &2000i128, &8000i128, &20000i128);
+
+    let cfg_after = client.get_config();
+    assert_eq!(cfg_after.spending_limit, 2000);
+    assert_eq!(cfg_after.daily_limit, 8000);
+    assert_eq!(cfg_after.weekly_limit, 20000);
+}
+
+/// Non-admin cannot update limits.
+#[test]
+fn test_update_limits_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    let mut signers = soroban_sdk::Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(non_admin.clone());
+
+    client.initialize(&admin, &default_init_config(&env, signers, 1));
+
+    let result = client.try_update_limits(&non_admin, &2000i128, &8000i128, &20000i128);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+/// Zero or negative values are rejected.
+#[test]
+fn test_update_limits_invalid_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+
+    let mut signers = soroban_sdk::Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &default_init_config(&env, signers, 1));
+
+    // spending_limit = 0
+    assert_eq!(
+        client.try_update_limits(&admin, &0i128, &5000i128, &10000i128),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+    // daily_limit = 0
+    assert_eq!(
+        client.try_update_limits(&admin, &1000i128, &0i128, &10000i128),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+    // weekly_limit = 0
+    assert_eq!(
+        client.try_update_limits(&admin, &1000i128, &5000i128, &0i128),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+}
+
+/// Hierarchy violation (spending > daily, or daily > weekly) is rejected.
+#[test]
+fn test_update_limits_invalid_hierarchy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+
+    let mut signers = soroban_sdk::Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &default_init_config(&env, signers, 1));
+
+    // spending_limit > daily_limit
+    assert_eq!(
+        client.try_update_limits(&admin, &6000i128, &5000i128, &10000i128),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+    // daily_limit > weekly_limit
+    assert_eq!(
+        client.try_update_limits(&admin, &1000i128, &12000i128, &10000i128),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+}
