@@ -251,30 +251,78 @@ export const useVaultContract = () => {
     const getDashboardStats = useCallback(async () => {
         try {
             return await withRetry(async () => {
-                const accountInfo = await server.getAccount(env.contractId) as unknown as { balances: StellarBalance[] };
-                const nativeBalance = accountInfo.balances.find((b: StellarBalance) => b.asset_type === 'native');
-                const balance = nativeBalance ? parseFloat(nativeBalance.balance).toLocaleString() : "0";
-                return {
-                    totalBalance: balance,
-                    totalProposals: 24,
-                    pendingApprovals: 3,
-                    readyToExecute: 1,
-                    activeSigners: 5,
-                    threshold: "3/5"
-                };
+                // Fetch balance, config, and proposals in parallel
+                const [accountInfo, configResult, proposalsResult] = await Promise.allSettled([
+                    server.getAccount(env.contractId) as Promise<unknown>,
+                    readContractValue('get_config').catch(() => null).then(r =>
+                        r ?? readContractValue('get_vault_config').catch(() => null)
+                    ),
+                    getVaultEvents(undefined, 200),
+                ]);
+
+                // --- Balance ---
+                let balance = '0';
+                if (accountInfo.status === 'fulfilled') {
+                    const info = accountInfo.value as { balances?: StellarBalance[] };
+                    const native = info.balances?.find(b => b.asset_type === 'native');
+                    if (native) balance = parseFloat(native.balance).toLocaleString();
+                }
+
+                // --- Signer / threshold from config ---
+                let activeSigners = 0;
+                let threshold = '0/0';
+                if (configResult.status === 'fulfilled' && configResult.value) {
+                    const cfg = configResult.value as Record<string, unknown>;
+                    const signers = parseSignerAddresses(cfg.signers);
+                    const t = parseNumericValue(cfg.threshold);
+                    activeSigners = signers.length;
+                    threshold = `${t}/${activeSigners}`;
+                }
+
+                // --- Proposal counts from events ---
+                let totalProposals = 0;
+                let pendingApprovals = 0;
+                let readyToExecute = 0;
+                if (proposalsResult.status === 'fulfilled') {
+                    const activities = proposalsResult.value.activities;
+                    // Reconstruct proposal states (same logic as getProposals)
+                    const proposalMap = new Map<string, { status: string; approvals: number; threshold: number }>();
+                    for (const ev of activities) {
+                        if (ev.type === 'proposal_created') {
+                            const id = String(ev.eventId.split('-')[0] ?? ev.eventId);
+                            proposalMap.set(id, { status: 'Pending', approvals: 0, threshold: 3 });
+                        }
+                    }
+                    for (const ev of activities) {
+                        const id = String(ev.eventId.split('-')[0] ?? ev.eventId);
+                        const p = proposalMap.get(id);
+                        if (!p) continue;
+                        if (ev.type === 'proposal_approved') {
+                            const d = ev.details as Record<string, unknown>;
+                            const approvals = Number(d.approval_count ?? p.approvals + 1);
+                            const t = Number(d.threshold ?? p.threshold);
+                            proposalMap.set(id, { ...p, approvals, threshold: t, status: approvals >= t ? 'Approved' : 'Pending' });
+                        } else if (ev.type === 'proposal_rejected') {
+                            proposalMap.set(id, { ...p, status: 'Rejected' });
+                        } else if (ev.type === 'proposal_executed') {
+                            proposalMap.set(id, { ...p, status: 'Executed' });
+                        } else if (ev.type === 'proposal_ready') {
+                            proposalMap.set(id, { ...p, status: 'Approved' });
+                        }
+                    }
+                    const proposals = Array.from(proposalMap.values());
+                    totalProposals = proposals.filter(p => p.status !== 'Executed' && p.status !== 'Rejected').length;
+                    pendingApprovals = proposals.filter(p => p.status === 'Pending').length;
+                    readyToExecute = proposals.filter(p => p.status === 'Approved').length;
+                }
+
+                return { totalBalance: balance, totalProposals, pendingApprovals, readyToExecute, activeSigners, threshold };
             }, { maxAttempts: 3, initialDelayMs: 1000 });
         } catch (e) {
             console.error("Failed to fetch dashboard stats:", e);
-            return {
-                totalBalance: "0",
-                totalProposals: 0,
-                pendingApprovals: 0,
-                readyToExecute: 0,
-                activeSigners: 0,
-                threshold: "0/0"
-            };
+            return { totalBalance: '0', totalProposals: 0, pendingApprovals: 0, readyToExecute: 0, activeSigners: 0, threshold: '0/0' };
         }
-    }, []);
+    }, [readContractValue, getVaultEvents]);
 
     const getVaultConfig = useCallback(async (): Promise<VaultConfig> => {
         const [configRawPrimary, configRawLegacy, userRole, isSigner] = await Promise.all([
@@ -301,17 +349,20 @@ export const useVaultContract = () => {
             return { signers, threshold, spendingLimit, dailyLimit, weeklyLimit, timelockThreshold, timelockDelay, currentUserRole: userRole, isCurrentUserSigner: isSigner };
         }
 
-        const fallbackStats = await getDashboardStats();
-        const [thresholdCount = '0', signerCount = '0'] = fallbackStats.threshold.split('/');
-        const fallbackThreshold = Number.parseInt(thresholdCount, 10);
-        const fallbackSignerCount = Number.parseInt(signerCount, 10);
+        // Fallback: derive signer count from Horizon account data
+        let fallbackSignerCount = 0;
+        let fallbackThreshold = 0;
+        try {
+            const accountInfo = await server.getAccount(env.contractId) as unknown as { signers?: Array<unknown> };
+            fallbackSignerCount = Array.isArray(accountInfo.signers) ? accountInfo.signers.length : 0;
+        } catch { /* ignore */ }
         return {
-            signers: Array.from({ length: Number.isFinite(fallbackSignerCount) ? fallbackSignerCount : 0 }, () => ''),
-            threshold: Number.isFinite(fallbackThreshold) ? fallbackThreshold : 0,
+            signers: Array.from({ length: fallbackSignerCount }, () => ''),
+            threshold: fallbackThreshold,
             spendingLimit: '0', dailyLimit: '0', weeklyLimit: '0', timelockThreshold: '0', timelockDelay: 0,
             currentUserRole: userRole, isCurrentUserSigner: isSigner,
         };
-    }, [address, getDashboardStats, getUserRole, readContractValue]);
+    }, [address, getUserRole, readContractValue]);
 
     const proposeTransfer = async (recipient: string, token: string, amount: string, memo: string) => {
         if (!isConnected || !address) throw new Error("Wallet not connected");
