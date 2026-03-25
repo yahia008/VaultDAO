@@ -2,6 +2,8 @@ export interface VaultError {
   code: string;
   message: string;
   debug?: string;
+  /** Set to true to mark this as already parsed — prevents double-wrapping. */
+  _parsed?: true;
 }
 
 const isObj = (e: unknown): e is Record<string, unknown> =>
@@ -82,6 +84,50 @@ function parseContractErrorCode(log: string): string | null {
   return CONTRACT_CODE_MAP[num] ?? `CONTRACT_ERROR_${num}`;
 }
 
+/** Parse Horizon transaction result codes (e.g. op_bad_auth, op_no_trust). */
+function parseHorizonResultCodes(error: unknown): string | null {
+  if (!isObj(error)) return null;
+  // Horizon SDK wraps result codes under response.data.extras.result_codes
+  const response = (error as Record<string, unknown>)['response'];
+  const data = isObj(response) ? (response as Record<string, unknown>)['data'] : null;
+  const extras = isObj(data) ? (data as Record<string, unknown>)['extras'] : null;
+  const resultCodes = isObj(extras) ? (extras as Record<string, unknown>)['result_codes'] : null;
+  if (!isObj(resultCodes)) return null;
+  const ops = (resultCodes as Record<string, unknown>)['operations'];
+  const tx = (resultCodes as Record<string, unknown>)['transaction'];
+  const opCode = Array.isArray(ops) ? String(ops[0] ?? '') : '';
+  const txCode = typeof tx === 'string' ? tx : '';
+  if (opCode.includes('op_bad_auth') || txCode.includes('tx_bad_auth')) return 'UNAUTHORIZED';
+  if (opCode.includes('op_no_trust') || opCode.includes('op_low_reserve')) return 'INSUFFICIENT_BALANCE';
+  if (txCode.includes('tx_insufficient_balance') || opCode.includes('op_underfunded')) return 'INSUFFICIENT_BALANCE';
+  if (txCode.includes('tx_no_account')) return 'ACCOUNT_NOT_FOUND';
+  if (txCode.includes('tx_failed') || opCode.length > 0) return 'TX_FAILED';
+  return null;
+}
+
+/** Parse Soroban simulation error objects (not just string messages). */
+function parseSorobanSimulationObject(error: unknown): string | null {
+  if (!isObj(error)) return null;
+  // SorobanRpc simulation error shape: { error: string, events?: [...] }
+  const simError = (error as Record<string, unknown>)['error'];
+  if (typeof simError === 'string') {
+    const contractCode = parseContractErrorCode(simError);
+    if (contractCode) return contractCode;
+    const hostCode = parseSorobanHostError(simError);
+    if (hostCode) return hostCode;
+    const netCode = parseNetworkError(simError);
+    if (netCode) return netCode;
+  }
+  // RPC JSON error shape: { code: number, message: string }
+  const rpcCode = (error as Record<string, unknown>)['code'];
+  const rpcMsg = rawMessage(error).toLowerCase();
+  if (typeof rpcCode === 'number') {
+    if (rpcCode === -32600 || rpcCode === -32601) return 'RPC_ERROR';
+    if (rpcCode === -32000) return rpcMsg.includes('timeout') ? 'RPC_TIMEOUT' : 'RPC_ERROR';
+  }
+  return null;
+}
+
 /** Parse Soroban host/wasm error types. */
 function parseSorobanHostError(log: string): string | null {
   if (log.includes('Error(WasmVm,') || log.includes('Error(Value,')) return 'CONTRACT_EXECUTION_ERROR';
@@ -128,49 +174,64 @@ function parseTxResultError(msg: string): string | null {
 }
 
 export const parseError = (error: unknown): VaultError => {
-  if (!error) return { code: 'UNKNOWN', message: 'An unknown error occurred.' };
+  if (!error) return { code: 'UNKNOWN', message: 'An unknown error occurred.', _parsed: true };
+
+  // Pass-through already-parsed VaultErrors to prevent double-wrapping.
+  if (isObj(error) && (error as Record<string, unknown>)['_parsed'] === true) {
+    return error as unknown as VaultError;
+  }
 
   const msg = rawMessage(error);
   const debugMsg = import.meta.env.DEV ? msg : undefined;
+  const make = (code: string): VaultError => ({ code, message: msg, debug: debugMsg, _parsed: true });
 
   // 1. Wallet errors (check object shape first)
   const walletCode = parseWalletError(error);
-  if (walletCode) return { code: walletCode, message: msg, debug: debugMsg };
+  if (walletCode) return make(walletCode);
 
-  // 2. Contract error codes from simulation/RPC logs
+  // 2. Horizon result codes (Stellar SDK error objects)
+  const horizonCode = parseHorizonResultCodes(error);
+  if (horizonCode) return make(horizonCode);
+
+  // 3. Soroban simulation error objects
+  const simObjCode = parseSorobanSimulationObject(error);
+  if (simObjCode) return make(simObjCode);
+
+  // 4. Contract error codes from simulation/RPC string logs
   const contractCode = parseContractErrorCode(msg);
-  if (contractCode) return { code: contractCode, message: msg, debug: debugMsg };
+  if (contractCode) return make(contractCode);
 
-  // 3. Soroban host errors
+  // 5. Soroban host errors
   const hostCode = parseSorobanHostError(msg);
-  if (hostCode) return { code: hostCode, message: msg, debug: debugMsg };
+  if (hostCode) return make(hostCode);
 
-  // 4. Transaction result errors
+  // 6. Transaction result errors
   const txCode = parseTxResultError(msg);
-  if (txCode) return { code: txCode, message: msg, debug: debugMsg };
+  if (txCode) return make(txCode);
 
-  // 5. Network/RPC errors
+  // 7. Network/RPC errors
   const netCode = parseNetworkError(msg);
-  if (netCode) return { code: netCode, message: msg, debug: debugMsg };
+  if (netCode) return make(netCode);
 
-  // 6. Wallet not connected (thrown by assertReady)
+  // 8. Wallet not connected (thrown by assertReady)
   if (msg.includes('connect your wallet') || msg.includes('not connected')) {
-    return { code: 'WALLET_NOT_CONNECTED', message: msg, debug: debugMsg };
+    return make('WALLET_NOT_CONNECTED');
   }
 
-  // 7. Wrong network (thrown by assertReady)
+  // 9. Wrong network (thrown by assertReady)
   if (msg.includes('Wrong network') || msg.includes('switch your wallet')) {
-    return { code: 'NETWORK_MISMATCH', message: msg, debug: debugMsg };
+    return make('NETWORK_MISMATCH');
   }
 
-  // 8. Contract not configured
+  // 10. Contract not configured
   if (msg.includes('not configured') || msg.includes('contractId')) {
-    return { code: 'CONTRACT_NOT_CONFIGURED', message: msg, debug: debugMsg };
+    return make('CONTRACT_NOT_CONFIGURED');
   }
 
   return {
     code: 'RPC_ERROR',
     message: msg || 'Failed to submit transaction.',
     debug: debugMsg,
+    _parsed: true,
   };
 };

@@ -4,6 +4,7 @@
  */
 
 import type { VaultError } from './errorParser';
+import { parseError } from './errorParser';
 
 export interface UserFriendlyError {
   title: string;
@@ -539,20 +540,14 @@ export function toUserFriendlyError(error: VaultError | { code: string; message?
 
 /**
  * Get user-friendly error from an unknown thrown value (e.g. from catch).
+ * Routes through parseError first for consistent code extraction.
  */
 export function getUserFriendlyError(error: unknown): UserFriendlyError {
+  // Already a VaultError — map directly.
   if (error && typeof error === 'object' && 'code' in error && typeof (error as { code: string }).code === 'string') {
     return toUserFriendlyError(error as VaultError);
   }
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    if (msg.includes('network') || msg.includes('fetch')) return ERROR_MAP.RPC_ERROR;
-    if (msg.includes('wallet') || msg.includes('freighter')) return ERROR_MAP.WALLET_ERROR;
-    if (msg.includes('connect your wallet')) return ERROR_MAP.WALLET_NOT_CONNECTED;
-    if (msg.includes('wrong network')) return ERROR_MAP.NETWORK_MISMATCH;
-  }
-  return {
-    ...DEFAULT_USER_ERROR,
-    message: error instanceof Error ? error.message : DEFAULT_USER_ERROR.message,
-  };
+  // Run through the full parse pipeline to get a canonical code.
+  const parsed = parseError(error);
+  return toUserFriendlyError(parsed);
 }
