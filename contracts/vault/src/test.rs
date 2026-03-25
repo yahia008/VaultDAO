@@ -10137,3 +10137,865 @@ fn test_frontend_schedule_payment_compatibility() {
         ],
     );
 }
+
+// ============================================================================
+// PUBLIC READ API CONSISTENCY TESTS
+// ============================================================================
+// Tests ensuring the contract's public read methods return consistent,
+// frontend-consumable results across normal and edge cases.
+
+// -----------------------------------------------------------------------------
+// Config Getter Tests
+// -----------------------------------------------------------------------------
+
+/// Test get_config returns NotInitialized when vault is not set up
+#[test]
+fn test_public_api_get_config_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let result = client.try_get_config();
+    assert_eq!(result.unwrap_err(), Ok(VaultError::NotInitialized));
+}
+
+/// Test get_config returns correct config after initialization
+#[test]
+fn test_public_api_get_config_after_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    let config = InitConfig {
+        signers: signers.clone(),
+        threshold: 2,
+        quorum: 0,
+        spending_limit: 1000,
+        daily_limit: 5000,
+        weekly_limit: 10000,
+        timelock_threshold: 500,
+        timelock_delay: 100,
+        velocity_limit: VelocityConfig {
+            limit: 100,
+            window: 3600,
+        },
+        threshold_strategy: ThresholdStrategy::Fixed,
+        default_voting_deadline: 50,
+        veto_addresses: Vec::new(&env),
+        pre_execution_hooks: Vec::new(&env),
+        post_execution_hooks: Vec::new(&env),
+        retry_config: RetryConfig {
+            enabled: false,
+            max_retries: 0,
+            initial_backoff_ledgers: 0,
+        },
+        recovery_config: types::RecoveryConfig::default(&env),
+        staking_config: types::StakingConfig::default(),
+    };
+    client.initialize(&admin, &config);
+
+    let retrieved_config = client.get_config();
+    assert_eq!(retrieved_config.signers.len(), signers.len());
+    assert_eq!(retrieved_config.threshold, 2);
+    assert_eq!(retrieved_config.spending_limit, 1000);
+    assert_eq!(retrieved_config.daily_limit, 5000);
+    assert_eq!(retrieved_config.weekly_limit, 10000);
+}
+
+/// Test get_config consistency - multiple calls return same result
+#[test]
+fn test_public_api_get_config_consistency() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Multiple calls should return identical results
+    let config1 = client.get_config();
+    let config2 = client.get_config();
+    let config3 = client.get_config();
+
+    assert_eq!(config1.threshold, config2.threshold);
+    assert_eq!(config2.threshold, config3.threshold);
+    assert_eq!(config1.signers.len(), config2.signers.len());
+    assert_eq!(config2.signers.len(), config3.signers.len());
+}
+
+// -----------------------------------------------------------------------------
+// Role Getter Tests
+// -----------------------------------------------------------------------------
+
+/// Test get_role returns default role for unknown address
+#[test]
+fn test_public_api_get_role_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let unknown = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Unknown address should get default role (Member)
+    let role = client.get_role(&unknown);
+    assert_eq!(role, Role::Member);
+}
+
+/// Test get_role returns correct role after assignment
+#[test]
+fn test_public_api_get_role_after_assignment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasurer = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(treasurer.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+
+    // Set role
+    client.set_role(&admin, &treasurer, &Role::Treasurer);
+
+    // Verify role
+    let role = client.get_role(&treasurer);
+    assert_eq!(role, Role::Treasurer);
+}
+
+/// Test get_role_assignments returns all role assignments
+#[test]
+fn test_public_api_get_role_assignments() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasurer = Address::generate(&env);
+    let member = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(treasurer.clone());
+    signers.push_back(member.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+
+    // Set roles
+    client.set_role(&admin, &treasurer, &Role::Treasurer);
+    client.set_role(&admin, &member, &Role::Member);
+
+    // Get all assignments
+    let assignments = client.get_role_assignments();
+    assert_eq!(assignments.len(), 3); // admin + treasurer + member
+}
+
+/// Test role getter consistency after mutations
+#[test]
+fn test_public_api_role_consistency_after_role_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(user.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+
+    // Initial role
+    assert_eq!(client.get_role(&user), Role::Member);
+
+    // Change role
+    client.set_role(&admin, &user, &Role::Treasurer);
+    assert_eq!(client.get_role(&user), Role::Treasurer);
+
+    // Change again to Admin
+    client.set_role(&admin, &user, &Role::Admin);
+    assert_eq!(client.get_role(&user), Role::Admin);
+
+    // Verify assignments list is consistent
+    let assignments = client.get_role_assignments();
+    assert!(assignments.len() >= 2);
+}
+
+// -----------------------------------------------------------------------------
+// Signer Getter Tests
+// -----------------------------------------------------------------------------
+
+/// Test get_signers returns all initialized signers
+#[test]
+fn test_public_api_get_signers_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    let config = default_init_config(&env, signers.clone(), 2);
+    client.initialize(&admin, &config);
+
+    let retrieved_signers = client.get_signers();
+    assert_eq!(retrieved_signers.len(), 3);
+    assert!(retrieved_signers.contains(&admin));
+    assert!(retrieved_signers.contains(&signer1));
+    assert!(retrieved_signers.contains(&signer2));
+}
+
+/// Test get_signers consistency - multiple calls return same result
+#[test]
+fn test_public_api_get_signers_consistency() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let signers1 = client.get_signers();
+    let signers2 = client.get_signers();
+    let signers3 = client.get_signers();
+
+    assert_eq!(signers1.len(), signers2.len());
+    assert_eq!(signers2.len(), signers3.len());
+}
+
+/// Test get_signers empty before initialization
+#[test]
+fn test_public_api_get_signers_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let result = client.try_get_signers();
+    assert_eq!(result.unwrap_err(), Ok(VaultError::NotInitialized));
+}
+
+// -----------------------------------------------------------------------------
+// Proposal Getter Tests
+// -----------------------------------------------------------------------------
+
+/// Test get_proposal returns correct proposal data
+#[test]
+fn test_public_api_get_proposal_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &1000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let proposal_id = client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "test_memo"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.id, proposal_id);
+    assert_eq!(proposal.recipient, recipient);
+    assert_eq!(proposal.amount, 100);
+    assert_eq!(proposal.token, token);
+    assert_eq!(proposal.memo, Symbol::new(&env, "test_memo"));
+    assert_eq!(proposal.priority, Priority::Normal);
+}
+
+/// Test get_proposal returns NotFound for invalid ID
+#[test]
+fn test_public_api_get_proposal_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let result = client.try_get_proposal(&999);
+    assert_eq!(result.unwrap_err(), Ok(VaultError::ProposalNotFound));
+}
+
+/// Test list_proposals returns all proposals
+#[test]
+fn test_public_api_list_proposals_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Create multiple proposals
+    client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "p1"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+    client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &200,
+        &Symbol::new(&env, "p2"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+    client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &300,
+        &Symbol::new(&env, "p3"),
+        &Priority::High,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    let proposals = client.list_proposals(&0, &10);
+    assert_eq!(proposals.len(), 3);
+}
+
+/// Test list_proposals with pagination
+#[test]
+fn test_public_api_list_proposals_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Create 5 proposals
+    for _i in 0..5 {
+        client.propose_transfer(
+            &admin,
+            &recipient,
+            &token,
+            &100,
+            &Symbol::new(&env, "proposal"),
+            &Priority::Normal,
+            &Vec::new(&env),
+            &ConditionLogic::And,
+            &0i128,
+        );
+    }
+
+    // First page
+    let page1 = client.list_proposals(&0, &2);
+    assert_eq!(page1.len(), 2);
+
+    // Second page
+    let page2 = client.list_proposals(&2, &2);
+    assert_eq!(page2.len(), 2);
+
+    // Third page (partial)
+    let page3 = client.list_proposals(&4, &2);
+    assert_eq!(page3.len(), 1);
+}
+
+/// Test get_proposal and list_proposals consistency
+#[test]
+fn test_public_api_proposal_getter_list_consistency() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let proposal_id = client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "test"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    // Get via list
+    let proposals = client.list_proposal_ids(&0, &10);
+    assert!(proposals.contains(proposal_id));
+
+    // Get individually
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.id, proposal_id);
+
+    // Verify consistency
+    let first_id = proposals.get(0).unwrap();
+    let listed_proposal = client.get_proposal(&first_id);
+    assert_eq!(proposal.recipient, listed_proposal.recipient);
+    assert_eq!(proposal.amount, listed_proposal.amount);
+    assert_eq!(proposal.memo, listed_proposal.memo);
+}
+
+/// Test proposal getter consistency after state changes
+#[test]
+fn test_public_api_proposal_consistency_after_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+
+    let config = default_init_config(&env, signers, 2);
+    client.initialize(&admin, &config);
+    client.set_role(&admin, &signer1, &Role::Treasurer);
+
+    let proposal_id = client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "test"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    // Before approval
+    let before = client.get_proposal(&proposal_id);
+    assert_eq!(before.status, ProposalStatus::Pending);
+    assert_eq!(before.approvals.len(), 0);
+
+    // After first approval - still pending (needs 2 approvals)
+    client.approve_proposal(&admin, &proposal_id);
+    let after_first = client.get_proposal(&proposal_id);
+    assert_eq!(after_first.status, ProposalStatus::Pending);
+    assert_eq!(after_first.approvals.len(), 1);
+
+    // After second approval - should be approved
+    client.approve_proposal(&signer1, &proposal_id);
+    let after_second = client.get_proposal(&proposal_id);
+    assert_eq!(after_second.status, ProposalStatus::Approved);
+    assert_eq!(after_second.approvals.len(), 2);
+
+    // Verify other fields unchanged
+    assert_eq!(before.recipient, after_second.recipient);
+    assert_eq!(before.amount, after_second.amount);
+    assert_eq!(before.memo, after_second.memo);
+}
+
+// -----------------------------------------------------------------------------
+// Recurring Query Consistency Tests
+// -----------------------------------------------------------------------------
+
+/// Test get_recurring_payment returns correct data
+#[test]
+fn test_public_api_get_recurring_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let payment_id = client.schedule_payment(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "recurring"),
+        &720,
+    );
+
+    let payment = client.get_recurring_payment(&payment_id);
+    assert_eq!(payment.id, payment_id);
+    assert_eq!(payment.recipient, recipient);
+    assert_eq!(payment.amount, 100);
+    assert_eq!(payment.interval, 720);
+}
+
+/// Test recurring payment consistency after execution
+#[test]
+fn test_public_api_recurring_consistency_after_execution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_sequence_number(1000);
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    let payment_id = client.schedule_payment(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "recurring"),
+        &720,
+    );
+
+    // Before execution - should be active
+    let before = client.get_recurring_payment(&payment_id);
+    assert!(before.is_active);
+    assert_eq!(before.payment_count, 0);
+
+    // Advance ledger to allow execution
+    env.ledger().set_sequence_number(2000);
+
+    // Execute payment
+    client.execute_recurring_payment(&payment_id);
+
+    // After execution - payment_count should increase
+    let after = client.get_recurring_payment(&payment_id);
+    assert!(after.is_active);
+    assert!(after.payment_count >= 1);
+}
+
+/// Test get_today_spent returns correct value
+#[test]
+fn test_public_api_get_today_spent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &10000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Initially zero
+    assert_eq!(client.get_today_spent(), 0);
+
+    // Create and execute proposal
+    let proposal_id = client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &100,
+        &Symbol::new(&env, "test"),
+        &Priority::Normal,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+    client.approve_proposal(&admin, &proposal_id);
+    client.execute_proposal(&admin, &proposal_id);
+
+    // Should reflect spent amount
+    assert!(client.get_today_spent() >= 100);
+}
+
+// -----------------------------------------------------------------------------
+// Edge Cases Tests
+// -----------------------------------------------------------------------------
+
+/// Test getters with empty state
+#[test]
+fn test_public_api_edge_case_empty_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Empty proposals list
+    let proposals = client.list_proposal_ids(&0, &10);
+    assert_eq!(proposals.len(), 0);
+
+    // Empty role assignments (just admin with default role)
+    let assignments = client.get_role_assignments();
+    assert!(!assignments.is_empty());
+
+    // Signers list has admin
+    let signers_result = client.get_signers();
+    assert_eq!(signers_result.len(), 1);
+}
+
+/// Test getters with large data sets
+#[test]
+fn test_public_api_edge_case_large_dataset() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &1000000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+
+    let config = default_init_config(&env, signers, 1);
+    client.initialize(&admin, &config);
+
+    // Create 50 proposals
+    for _i in 0..50 {
+        client.propose_transfer(
+            &admin,
+            &recipient,
+            &token,
+            &100,
+            &Symbol::new(&env, "proposal"),
+            &Priority::Normal,
+            &Vec::new(&env),
+            &ConditionLogic::And,
+            &0i128,
+        );
+    }
+
+    // Verify list returns all
+    let all = client.list_proposal_ids(&0, &100);
+    assert_eq!(all.len(), 50);
+
+    // Verify pagination works
+    let page1 = client.list_proposal_ids(&0, &10);
+    assert_eq!(page1.len(), 10);
+
+    let page2 = client.list_proposal_ids(&10, &10);
+    assert_eq!(page2.len(), 10);
+}
+
+/// Test getter consistency after multiple state changes
+#[test]
+fn test_public_api_consistency_after_multiple_mutations() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultDAO, ());
+    let client = VaultDAOClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &token);
+    token_client.mint(&contract_id, &100000);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(admin.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    let config = default_init_config(&env, signers, 3);
+    client.initialize(&admin, &config);
+    client.set_role(&admin, &signer1, &Role::Treasurer);
+    client.set_role(&admin, &signer2, &Role::Treasurer);
+
+    // Create proposal
+    let proposal_id = client.propose_transfer(
+        &admin,
+        &recipient,
+        &token,
+        &1000,
+        &Symbol::new(&env, "test"),
+        &Priority::High,
+        &Vec::new(&env),
+        &ConditionLogic::And,
+        &0i128,
+    );
+
+    // Multiple approvals (need all 3 for threshold)
+    client.approve_proposal(&admin, &proposal_id);
+    client.approve_proposal(&signer1, &proposal_id);
+    client.approve_proposal(&signer2, &proposal_id);
+
+    // Verify proposal is approved
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.status, ProposalStatus::Approved);
+
+    // Verify list consistency
+    let proposals = client.list_proposal_ids(&0, &10);
+    assert!(proposals.contains(proposal_id));
+
+    // Verify signers
+    let signers_result = client.get_signers();
+    assert_eq!(signers_result.len(), 3);
+
+    // Verify config
+    let config_result = client.get_config();
+    assert_eq!(config_result.threshold, 3);
+}
