@@ -1,69 +1,176 @@
 export interface VaultError {
   code: string;
   message: string;
+  debug?: string;
 }
 
-/**
- * Type guard to safely check if an unknown error has
- * specific properties like 'title' or 'message'.
- */
-const isObjectWithErrorProps = (error: unknown): error is { title?: string; message?: string } => {
-    return typeof error === 'object' && error !== null;
+const isObj = (e: unknown): e is Record<string, unknown> =>
+  typeof e === 'object' && e !== null;
+
+/** Extract a raw string message from any thrown value. */
+const rawMessage = (error: unknown): string => {
+  if (isObj(error)) {
+    const msg = error['message'];
+    if (typeof msg === 'string') return msg;
+  }
+  if (typeof error === 'string') return error;
+  return '';
 };
 
+/**
+ * Contract error code → VaultError code.
+ * Matches VaultError enum in contracts/vault/src/errors.rs.
+ */
+const CONTRACT_CODE_MAP: Record<number, string> = {
+  1: 'ALREADY_INITIALIZED',
+  2: 'NOT_INITIALIZED',
+  3: 'NO_SIGNERS',
+  4: 'THRESHOLD_TOO_LOW',
+  5: 'THRESHOLD_TOO_HIGH',
+  6: 'QUORUM_TOO_HIGH',
+  7: 'QUORUM_NOT_REACHED',
+  10: 'UNAUTHORIZED',
+  11: 'NOT_A_SIGNER',
+  12: 'INSUFFICIENT_ROLE',
+  13: 'VOTER_NOT_IN_SNAPSHOT',
+  20: 'PROPOSAL_NOT_FOUND',
+  21: 'PROPOSAL_NOT_PENDING',
+  22: 'PROPOSAL_NOT_APPROVED',
+  23: 'PROPOSAL_ALREADY_EXECUTED',
+  24: 'PROPOSAL_EXPIRED',
+  25: 'PROPOSAL_ALREADY_CANCELLED',
+  26: 'VOTING_DEADLINE_PASSED',
+  30: 'ALREADY_APPROVED',
+  40: 'INVALID_AMOUNT',
+  41: 'EXCEEDS_PROPOSAL_LIMIT',
+  42: 'EXCEEDS_DAILY_LIMIT',
+  43: 'EXCEEDS_WEEKLY_LIMIT',
+  50: 'VELOCITY_LIMIT_EXCEEDED',
+  60: 'TIMELOCK_NOT_EXPIRED',
+  61: 'SCHEDULING_ERROR',
+  70: 'INSUFFICIENT_BALANCE',
+  71: 'TRANSFER_FAILED',
+  80: 'SIGNER_ALREADY_EXISTS',
+  81: 'SIGNER_NOT_FOUND',
+  82: 'CANNOT_REMOVE_SIGNER',
+  90: 'RECIPIENT_NOT_WHITELISTED',
+  91: 'RECIPIENT_BLACKLISTED',
+  92: 'ADDRESS_ALREADY_ON_LIST',
+  93: 'ADDRESS_NOT_ON_LIST',
+  110: 'INSURANCE_INSUFFICIENT',
+  120: 'GAS_LIMIT_EXCEEDED',
+  130: 'BATCH_TOO_LARGE',
+  140: 'CONDITIONS_NOT_MET',
+  150: 'INTERVAL_TOO_SHORT',
+  160: 'DEX_ERROR',
+  168: 'RETRY_ERROR',
+  210: 'TEMPLATE_NOT_FOUND',
+  211: 'TEMPLATE_INACTIVE',
+  212: 'TEMPLATE_VALIDATION_FAILED',
+  220: 'FUNDING_ROUND_ERROR',
+  230: 'ATTACHMENT_HASH_INVALID',
+  231: 'TOO_MANY_ATTACHMENTS',
+  232: 'TOO_MANY_TAGS',
+  233: 'METADATA_VALUE_INVALID',
+};
+
+/** Parse `Error(Contract, #N)` patterns from Soroban simulation/RPC output. */
+function parseContractErrorCode(log: string): string | null {
+  const match = log.match(/Error\(Contract,\s*#(\d+)\)/);
+  if (!match) return null;
+  const num = parseInt(match[1], 10);
+  return CONTRACT_CODE_MAP[num] ?? `CONTRACT_ERROR_${num}`;
+}
+
+/** Parse Soroban host/wasm error types. */
+function parseSorobanHostError(log: string): string | null {
+  if (log.includes('Error(WasmVm,') || log.includes('Error(Value,')) return 'CONTRACT_EXECUTION_ERROR';
+  if (log.includes('Error(Auth,')) return 'UNAUTHORIZED';
+  if (log.includes('Error(Budget,')) return 'GAS_LIMIT_EXCEEDED';
+  if (log.includes('Error(Storage,')) return 'STORAGE_ERROR';
+  if (log.includes('HostError') || log.includes('host invocation failed')) return 'CONTRACT_EXECUTION_ERROR';
+  return null;
+}
+
+/** Parse wallet/Freighter errors. */
+function parseWalletError(error: unknown): string | null {
+  if (!isObj(error)) return null;
+  const title = error['title'];
+  const code = error['code'];
+  const msg = rawMessage(error).toLowerCase();
+
+  if (title === 'Freighter Error' || String(code) === '-4') return 'WALLET_REJECTED';
+  if (msg.includes('user declined') || msg.includes('user rejected') || msg.includes('cancelled')) return 'WALLET_REJECTED';
+  if (msg.includes('freighter') || msg.includes('wallet')) return 'WALLET_ERROR';
+  if (msg.includes('not connected') || msg.includes('no wallet')) return 'WALLET_NOT_CONNECTED';
+  return null;
+}
+
+/** Parse network/RPC errors. */
+function parseNetworkError(msg: string): string | null {
+  const lower = msg.toLowerCase();
+  if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('network request failed')) return 'NETWORK_OFFLINE';
+  if (lower.includes('timeout') || lower.includes('timed out')) return 'RPC_TIMEOUT';
+  if (lower.includes('wrong network') || lower.includes('network mismatch')) return 'NETWORK_MISMATCH';
+  if (lower.includes('rpc') || lower.includes('soroban') || lower.includes('horizon')) return 'RPC_ERROR';
+  if (lower.includes('getevents') || lower.includes('getlatestledger') || lower.includes('sendtransaction')) return 'RPC_ERROR';
+  return null;
+}
+
+/** Parse transaction submission result errors. */
+function parseTxResultError(msg: string): string | null {
+  if (msg.includes('txBAD_AUTH') || msg.includes('tx_bad_auth')) return 'UNAUTHORIZED';
+  if (msg.includes('txINSUFFICIENT_BALANCE') || msg.includes('tx_insufficient_balance')) return 'INSUFFICIENT_BALANCE';
+  if (msg.includes('txNO_ACCOUNT')) return 'ACCOUNT_NOT_FOUND';
+  if (msg.includes('txFAILED') || msg.includes('tx_failed')) return 'TX_FAILED';
+  if (msg.includes('PENDING') === false && msg.includes('submission failed')) return 'TX_FAILED';
+  return null;
+}
+
 export const parseError = (error: unknown): VaultError => {
-  if (!error) {
-    return { code: "UNKNOWN", message: "An unknown error occurred." };
+  if (!error) return { code: 'UNKNOWN', message: 'An unknown error occurred.' };
+
+  const msg = rawMessage(error);
+  const debugMsg = import.meta.env.DEV ? msg : undefined;
+
+  // 1. Wallet errors (check object shape first)
+  const walletCode = parseWalletError(error);
+  if (walletCode) return { code: walletCode, message: msg, debug: debugMsg };
+
+  // 2. Contract error codes from simulation/RPC logs
+  const contractCode = parseContractErrorCode(msg);
+  if (contractCode) return { code: contractCode, message: msg, debug: debugMsg };
+
+  // 3. Soroban host errors
+  const hostCode = parseSorobanHostError(msg);
+  if (hostCode) return { code: hostCode, message: msg, debug: debugMsg };
+
+  // 4. Transaction result errors
+  const txCode = parseTxResultError(msg);
+  if (txCode) return { code: txCode, message: msg, debug: debugMsg };
+
+  // 5. Network/RPC errors
+  const netCode = parseNetworkError(msg);
+  if (netCode) return { code: netCode, message: msg, debug: debugMsg };
+
+  // 6. Wallet not connected (thrown by assertReady)
+  if (msg.includes('connect your wallet') || msg.includes('not connected')) {
+    return { code: 'WALLET_NOT_CONNECTED', message: msg, debug: debugMsg };
   }
 
-  // Default message extraction
-  const errorTitle = isObjectWithErrorProps(error) ? error.title : "";
-  const simulatedLog = isObjectWithErrorProps(error) ? error.message || "" : String(error);
-
-  // Handle Freighter/Wallet errors
-  if (errorTitle === "Freighter Error") {
-    return { code: "WALLET_ERROR", message: "Transaction rejected by wallet." };
+  // 7. Wrong network (thrown by assertReady)
+  if (msg.includes('Wrong network') || msg.includes('switch your wallet')) {
+    return { code: 'NETWORK_MISMATCH', message: msg, debug: debugMsg };
   }
 
-  // Handle Simulation Errors (Sync with Rust Contract Errors)
-  if (simulatedLog.includes("Error(Contract, #1)")) {
-    return { code: "NOT_INITIALIZED", message: "Contract not initialized." };
-  }
-  if (simulatedLog.includes("Error(Contract, #2)")) {
-    return {
-      code: "ALREADY_INITIALIZED",
-      message: "Contract already initialized.",
-    };
-  }
-  if (simulatedLog.includes("Error(Contract, #100)")) {
-    return {
-      code: "UNAUTHORIZED",
-      message: "You are not authorized to perform this action.",
-    };
-  }
-  if (simulatedLog.includes("Error(Contract, #101)")) {
-    return {
-      code: "INSUFFICIENT_FUNDS",
-      message: "Insufficient vault balance.",
-    };
-  }
-  if (simulatedLog.includes("Error(Contract, #102)")) {
-    return {
-      code: "THRESHOLD_NOT_MET",
-      message: "Proposal approval threshold not met.",
-    };
-  }
-
-  // Custom Errors Mapping (from errors.rs)
-  if (simulatedLog.includes("Error(Contract, #110)")) {
-    return {
-      code: "DAILY_LIMIT_EXCEEDED",
-      message: "Daily spending limit exceeded.",
-    };
+  // 8. Contract not configured
+  if (msg.includes('not configured') || msg.includes('contractId')) {
+    return { code: 'CONTRACT_NOT_CONFIGURED', message: msg, debug: debugMsg };
   }
 
   return {
-    code: "RPC_ERROR",
-    message: isObjectWithErrorProps(error) ? (error.message || "Failed to submit transaction.") : "Failed to submit transaction."
+    code: 'RPC_ERROR',
+    message: msg || 'Failed to submit transaction.',
+    debug: debugMsg,
   };
 };
